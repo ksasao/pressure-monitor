@@ -1,0 +1,17 @@
+# Arduino / ビルド成果物
+build/
+*.elf
+*.map
+
+# エディタ
+.vscode/
+.idea/
+
+# GitHub Pages (Jekyll)
+_site/
+.jekyll-cache/
+.sass-cache/
+
+# OS
+.DS_Store
+Thumbs.db
