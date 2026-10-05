@@ -3,11 +3,15 @@ layout: default
 title: esp32c3-bmp581
 ---
 
-# esp32c3-bmp581
+# BMP581搭載 ESP32-C3 気圧変動可視化開発ボード
 
-ESP32-C3 と気圧センサ BMP581、WS2812B 5 個で作った版です。
+![手を動かすと、気圧の変化に応じて LED が青やオレンジに光る様子](../assets/images/esp32c3-bmp581/demo.gif)
 
-ご質問が多い内容を、[よくある質問](faq/)にまとめています。
+Bosch製の高精度気圧センサBMP581を搭載し、気圧の微小な変化を測定して、5個のRGB LEDの光としてリアルタイムに可視化するESP32-C3搭載ボードです。
+単三電池ボックスを備えており、単三電池2本で単独動作できます。また、USB-C経由でプログラムを書き換えることができ、汎用のESP32-C3開発ボードとしても利用できます。
+さらにQwiicコネクタを搭載しているため、ファームウェアを書き換えることでI²Cセンサなどを追加し、さまざまな環境センシング用途へ拡張できます。
+
+[よくある質問](faq/)にまとめています。
 
 ## 回路図
 
@@ -30,7 +34,7 @@ ESP32-C3 と気圧センサ BMP581、WS2812B 5 個で作った版です。
 
 ## ファームウェア
 
-[firmware/esp32c3-bmp581](https://github.com/ksasao/pressure-monitor/tree/main/firmware/esp32c3-bmp581) に Arduino スケッチがあります。必要なライブラリ、ボード設定、調整できるパラメータは、そちらの README にまとめてあります。
+[firmware/esp32c3-bmp581](https://github.com/ksasao/pressure-monitor/tree/main/firmware/esp32c3-bmp581) に Arduino スケッチがあります。必要なライブラリ、ボード設定、調整できるパラメータは README を参照してください。
 
 ## 使い方
 
