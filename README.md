@@ -24,7 +24,8 @@
 ```
 pressure-monitor/
 ├── firmware/                  ファームウェア
-│   └── esp32c3-bmp581/        ESP32-C3 + BMP581 (Arduino スケッチ)
+│   ├── esp32c3-bmp581/        ESP32-C3 + BMP581 (Arduino スケッチ)
+│   └── esp32c3-captive-portal-test/   キャプティブポータルの検証用スケッチ
 ├── hardware/                  回路図・基板データ
 │   └── esp32c3-bmp581/
 ├── docs/                      GitHub Pages の資料 (使い方、回路図など)
@@ -40,7 +41,7 @@ pressure-monitor/
 ## クイックスタート（esp32c3-bmp581）
 
 1. Arduino IDE 2.x に、ESP32 のボードパッケージ（Espressif Systems 製）を入れる
-2. ライブラリマネージャから **SparkFun BMP581 Arduino Library** と **FastLED**（3.7.0 以降）を入れる
+2. ライブラリマネージャから **SparkFun BMP581 Arduino Library**、**FastLED**（3.7.0 以降）、**ESP Async WebServer**、**Async TCP**（後ろの 2 つは ESP32Async 製）を入れる
 3. ボードは **ESP32C3 Dev Module**、**USB CDC On Boot** は **Enabled** にする
 4. [`firmware/esp32c3-bmp581/esp32c3-bmp581.ino`](firmware/esp32c3-bmp581/esp32c3-bmp581.ino) を開いて書き込む
 
