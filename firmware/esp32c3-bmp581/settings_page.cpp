@@ -71,10 +71,10 @@ setInterval(upd,1000);upd();
     }
     h += F("</select>");
 
-    h += F("<label>LED の電流の上限 (mA)</label>"
-           "<input type=\"number\" name=\"maxma\" min=\"50\" max=\"500\" value=\"");
-    h += String(g_set.maxMilliamps);
-    h += F("\"><small>白など明るい色で電流が増えるときの上限。下げると暗くなります</small>");
+    h += F("<label>LED の明るさの最大値 (0〜255)</label>"
+           "<input type=\"number\" name=\"bright\" min=\"0\" max=\"255\" value=\"");
+    h += String(g_set.brightness);
+    h += F("\"><small>全ての色の明るさに掛かります。255 は抑えない、小さいほど暗くなります。電池の持ちも延びます</small>");
 
     h += F(R"HTML(<button type="submit" name="exit" value="0">保存</button>
 <button type="submit" name="exit" value="1">保存して終了 (Wi-Fi をオフ)</button>

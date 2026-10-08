@@ -17,7 +17,7 @@
 //   trailStepTicks 色を後ろへ送る間隔 [ティック]。1 = 毎フレーム。
 //                  大きくすると LED2..5 に長い時間の履歴が流れる (LED1 は常にライブ値)
 //   defaultMode    起動時の表示モード (0 = 気圧変化, 1 = バー, 2 = 消灯)
-//   maxMilliamps   LED の電流上限。FastLED が自動で輝度を抑える
+//   brightness     LED の明るさの最大値 (0〜255)。全ての色に掛かる。255 = 抑えない
 //
 // 感度は、ログの hpf 列を見て調整してください。
 // 静止時の hpf の振れ幅より deltaLimit が小さいと、暗い色がちらつきます
@@ -27,7 +27,7 @@ struct AppSettings {
     int32_t hpfShift;
     int32_t trailStepTicks;
     int32_t defaultMode;
-    int32_t maxMilliamps;
+    int32_t brightness;
 };
 
 extern AppSettings        g_set;              // 現在の設定

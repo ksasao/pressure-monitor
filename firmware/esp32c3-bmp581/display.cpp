@@ -134,7 +134,7 @@ static void renderBar(float hPa)
 }
 
 // 診断用 (モード 3): 全 LED を白で点灯する。内容が変わらなくても、毎ティック送る。
-// 実際の電流は、FastLED の電流の上限 (maxMilliamps) で、輝度が抑えられる
+// 明るさは、設定の brightness (最大値) で抑えられる
 static void renderAllOn()
 {
     fill_solid(leds, NUM_LEDS, CRGB::White);
@@ -147,15 +147,15 @@ void displayBegin()
     for (uint8_t i = 0; i < NUM_LEDS; i++) s_trail[i] = CRGB::Black;
 
     FastLED.addLeds<WS2812B, PIN_NEO, GRB>(leds, NUM_LEDS);
-    displayApplyPower();
-    FastLED.setBrightness(255);     // 素通し。明るさはパレットの値で決める
+    displayApplyBrightness();
     fill_solid(leds, NUM_LEDS, CRGB::Black);
     showRaw();
 }
 
-void displayApplyPower()
+// 全ての色に掛かる明るさの最大値。255 なら、パレットの値のまま
+void displayApplyBrightness()
 {
-    FastLED.setMaxPowerInVoltsAndMilliamps(PWR_VOLTS, (uint32_t)g_set.maxMilliamps);
+    FastLED.setBrightness((uint8_t)g_set.brightness);
 }
 
 // 起動時の自己診断: 全 LED を順に R -> G -> B

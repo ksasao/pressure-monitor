@@ -16,7 +16,7 @@
 static const uint8_t DISPLAY_MODE_COUNT = 4;     // 表示モードの数
 
 void displayBegin();                       // FastLED の初期化。全消灯する
-void displayApplyPower();                  // settings の maxMilliamps (電流の上限) を反映する
+void displayApplyBrightness();             // settings の brightness (明るさの最大値) を反映する
 void displaySelfTest();                    // 起動時の自己診断。全 LED を順に R -> G -> B
 void displayError();                       // センサ異常の表示 (呼ぶたびに赤の点滅が反転する)
 void displayFill(const CRGB &c);           // 全 LED を単色にする (長押しの合図など)

@@ -146,12 +146,9 @@ static const uint8_t BAR_MAX_VALUE = 120;
 static const uint8_t SELFTEST_VALUE = 120;
 static const uint8_t ERROR_VALUE    = 120;
 
-// 消費電力の上限。FastLED が自動で輝度を抑えてくれます。
-// 白は 5 個全点灯で電流が最大になるので、電池駆動ではこの制限が効きます。
-// FastLED の電流モデルは 5V の WS2812B 基準なので、3.3V 動作では
-// 実際より多めに見積もられます (= 安全側に効きます)
-// 電流の上限 (mA) は settings の maxMilliamps で、設定モードから変更できます
-static const uint8_t PWR_VOLTS = 3;
+// LED の明るさの最大値 (0〜255) は、settings の brightness で、設定モードから変更できます。
+// 電流の上限による制限 (FastLED の setMaxPowerInVoltsAndMilliamps) は、使っていません。
+// 電流を実測してから、必要なら入れます
 
 // ----------------------------------------------------------------- sensor
 // 標高計算に使う基準気圧 [hPa]

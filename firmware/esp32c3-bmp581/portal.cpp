@@ -66,15 +66,15 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "hpf",   g_set.hpfShift);
     postInt(req, "trail", g_set.trailStepTicks);
     postInt(req, "mode",  g_set.defaultMode);
-    postInt(req, "maxma", g_set.maxMilliamps);
+    postInt(req, "bright", g_set.brightness);
 
     settingsClamp();
     settingsSave();
-    displayApplyPower();
-    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld mode=%ld maxmA=%ld\n",
+    displayApplyBrightness();
+    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld mode=%ld bright=%ld\n",
                   (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
                   (long)g_set.trailStepTicks, (long)g_set.defaultMode,
-                  (long)g_set.maxMilliamps);
+                  (long)g_set.brightness);
 
     bool exitAfter = req->hasParam("exit", true) &&
                      req->getParam("exit", true)->value() == "1";
@@ -96,7 +96,7 @@ static void handleReset(AsyncWebServerRequest *req)
 {
     s_lastActivityMs = millis();
     settingsReset();
-    displayApplyPower();
+    displayApplyBrightness();
     Serial.println(F("# settings reset to default"));
 
     req->redirect("/?saved=1");

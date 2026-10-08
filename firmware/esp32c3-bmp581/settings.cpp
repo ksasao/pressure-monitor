@@ -5,7 +5,7 @@
 
 #include "config.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 0, 250 };
+const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 0, 255 };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -26,7 +26,7 @@ void settingsClamp()
     g_set.hpfShift       = clampI(g_set.hpfShift, 4, 12);
     g_set.trailStepTicks = clampI(g_set.trailStepTicks, 1, 60);
     g_set.defaultMode    = clampI(g_set.defaultMode, 0, 2);
-    g_set.maxMilliamps   = clampI(g_set.maxMilliamps, 50, 500);
+    g_set.brightness     = clampI(g_set.brightness, 0, 255);
 }
 
 void settingsLoad()
@@ -38,7 +38,7 @@ void settingsLoad()
     g_set.hpfShift       = p.getInt("hpf",    SETTINGS_DEFAULT.hpfShift);
     g_set.trailStepTicks = p.getInt("trail",  SETTINGS_DEFAULT.trailStepTicks);
     g_set.defaultMode    = p.getInt("mode",   SETTINGS_DEFAULT.defaultMode);
-    g_set.maxMilliamps   = p.getInt("maxma",  SETTINGS_DEFAULT.maxMilliamps);
+    g_set.brightness     = p.getInt("bright", SETTINGS_DEFAULT.brightness);
     s_brownoutCount      = p.getUInt("bo", 0);
     p.end();
     settingsClamp();
@@ -53,7 +53,7 @@ void settingsSave()
     p.putInt("hpf",   g_set.hpfShift);
     p.putInt("trail", g_set.trailStepTicks);
     p.putInt("mode",  g_set.defaultMode);
-    p.putInt("maxma", g_set.maxMilliamps);
+    p.putInt("bright", g_set.brightness);
     p.end();
 }
 
