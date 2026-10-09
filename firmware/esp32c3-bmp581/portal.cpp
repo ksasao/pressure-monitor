@@ -17,7 +17,8 @@ static AsyncWebServer s_server(80);
 static DNSServer      s_dns;
 static String         s_portalUrl;         // 例: http://192.168.4.1/
 
-static uint32_t s_lastActivityMs = 0;      // 設定ページの最後の操作
+// 設定ページの最後の操作の時刻。WebSocket / HTTP の受信タスクが更新し、loop() が読むので volatile
+static volatile uint32_t s_lastActivityMs = 0;
 static bool     s_restartPending = false;
 static uint32_t s_restartAtMs    = 0;
 
@@ -83,6 +84,7 @@ static void handleSave(AsyncWebServerRequest *req)
     bool exitAfter = req->hasParam("exit", true) &&
                      req->getParam("exit", true)->value() == "1";
     if (exitAfter) {
+        Serial.println(F("# settings page: save and exit"));
         req->send(200, "text/html; charset=utf-8",
             "<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
@@ -96,34 +98,85 @@ static void handleSave(AsyncWebServerRequest *req)
     req->redirect("/?saved=1");
 }
 
-// 設定ページの操作中に、値を LED へ、すぐに反映する (保存はしない)。
+// ---- 設定ページの操作中の、LED へのリアルタイムの反映 (保存はしない)
 // 保存するのは「保存」を押したときだけで、保存しないまま再起動すると、元の値に戻る。
-// 表示モードの切り替えだけは、押したときに保存する (BOOT ボタンと同じ)
-static void handleLive(AsyncWebServerRequest *req)
+// 表示モードの切り替えだけは、押したときに保存する (BOOT ボタンと同じ)。
+//
+// 値は、WebSocket (/ws) で受け取る。スライドバーを動かしている間は、1 秒に 30 回ほど届くため、
+// HTTP の POST (/live) のように、応答を待つ往復の時間がかからない。
+// WebSocket が使えないときは、HTTP の POST (/live) で受け取る (ページのスクリプトが切り替える)
+
+static AsyncWebSocket s_ws("/ws");
+
+// 名前と値を 1 組、設定に反映する。ページの表示モードの番号は 1〜4、内部は 0〜3
+static void setLiveValue(const String &key, int32_t v)
+{
+    if      (key == "bright") g_set.brightness     = v;
+    else if (key == "limit")  g_set.deltaLimit     = v;
+    else if (key == "range")  g_set.deltaRange     = v;
+    else if (key == "hpf")    g_set.hpfShift       = v;
+    else if (key == "trail")  g_set.trailStepTicks = v;
+    else if (key == "hue")    g_set.hue            = v;
+    else if (key == "sat")    g_set.sat            = v;
+    else if (key == "val")    g_set.val            = v;
+    else if (key == "mode")   g_set.mode           = v - 1;
+}
+
+// 反映のあとの後始末 (範囲を整える。モードが変わったら保存する)
+static void finishLive(int32_t oldMode)
 {
     s_lastActivityMs = millis();
-
-    const int32_t oldMode = g_set.mode;
-    postInt(req, "bright", g_set.brightness);
-    postInt(req, "limit",  g_set.deltaLimit);
-    postInt(req, "range",  g_set.deltaRange);
-    postInt(req, "hpf",    g_set.hpfShift);
-    postInt(req, "trail",  g_set.trailStepTicks);
-    postInt(req, "hue",    g_set.hue);
-    postInt(req, "sat",    g_set.sat);
-    postInt(req, "val",    g_set.val);
-    if (req->hasParam("mode", true)) {
-        // ページの番号は 1〜4、内部は 0〜3
-        g_set.mode = (int32_t)req->getParam("mode", true)->value().toInt() - 1;
-    }
     settingsClamp();
-
     if (g_set.mode != oldMode) {
         settingsSaveMode();
         Serial.printf("# mode -> %ld (%s) [settings page]\n", (long)g_set.mode + 1,
                       modeName((uint8_t)g_set.mode));
     }
+}
+
+// HTTP の POST (/live)
+static void handleLive(AsyncWebServerRequest *req)
+{
+    const int32_t oldMode = g_set.mode;
+    for (size_t i = 0; i < req->params(); i++) {
+        const AsyncWebParameter *p = req->getParam(i);
+        if (p->isPost()) setLiveValue(p->name(), (int32_t)p->value().toInt());
+    }
+    finishLive(oldMode);
     req->send(204);
+}
+
+// WebSocket のメッセージ。"bright=255&limit=50&..." の形式
+static void onWsMessage(const uint8_t *data, size_t len)
+{
+    String s;
+    s.reserve(len);
+    for (size_t i = 0; i < len; i++) s += (char)data[i];
+
+    const int32_t oldMode = g_set.mode;
+    int pos = 0;
+    const int n = (int)s.length();
+    while (pos < n) {
+        int amp = s.indexOf('&', pos);
+        if (amp < 0) amp = n;
+        int eq = s.indexOf('=', pos);
+        if (eq > pos && eq < amp) {
+            setLiveValue(s.substring(pos, eq), (int32_t)s.substring(eq + 1, amp).toInt());
+        }
+        pos = amp + 1;
+    }
+    finishLive(oldMode);
+}
+
+static void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type,
+                      void *arg, uint8_t *data, size_t len)
+{
+    if (type != WS_EVT_DATA) return;
+    const AwsFrameInfo *info = (const AwsFrameInfo *)arg;
+    // 短い 1 フレームのテキストだけを扱う
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+        onWsMessage(data, len);
+    }
 }
 
 static void handleReset(AsyncWebServerRequest *req)
@@ -167,6 +220,8 @@ void portalBegin()
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);
     s_server.on("/live",   HTTP_POST, handleLive);
+    s_ws.onEvent(onWsEvent);
+    s_server.addHandler(&s_ws);
     s_server.on("/reset",  HTTP_POST, handleReset);
     s_server.onNotFound(handleNotFound);
     s_server.begin();
@@ -190,6 +245,7 @@ void portalBegin()
 void portalService(uint32_t nowMs)
 {
     s_dns.processNextRequest();
+    s_ws.cleanupClients();              // 切れた WebSocket の接続を片づける
 
     // 電池電圧の監視 (1 秒ごと)。最低値を記録して、Wi-Fi 送信時の電圧の落ち込みを見る
     if (nowMs - s_lastVbatMs >= 1000) {
@@ -206,7 +262,10 @@ void portalService(uint32_t nowMs)
     }
 
     // 無操作のタイムアウト
-    if (nowMs - s_lastActivityMs >= SETTINGS_IDLE_TIMEOUT_MS) {
+    // 引き算は符号付きで行う。受信タスクが、nowMs を取ったあとに時刻を更新すると、
+    // nowMs より新しくなる。符号なしだと、巨大な値になって、誤ってタイムアウトしてしまう
+    const int32_t idleMs = (int32_t)(nowMs - s_lastActivityMs);
+    if (idleMs >= (int32_t)SETTINGS_IDLE_TIMEOUT_MS) {
         Serial.println(F("# settings mode: idle timeout"));
         bootRebootInto(false);
     }

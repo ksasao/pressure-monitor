@@ -52,7 +52,6 @@ small{color:#555;display:block;margin-top:2px}
 button{font-size:1.1em;padding:12px 16px;margin:16px 8px 0 0}
 .box{background:#eef;padding:8px 12px;border-radius:6px;line-height:1.6}
 .ok{background:#dfd;padding:8px 12px;border-radius:6px;margin-bottom:8px}
-#sw{height:48px;border-radius:6px;border:1px solid #888;margin-top:12px}
 .mb{display:flex;gap:6px;margin:8px 0}
 .mb button{flex:1;margin:0;padding:10px 4px;font-size:1em}
 .mb button.on{background:#36c;color:#fff;border-color:#36c}
@@ -111,34 +110,35 @@ setInterval(upd,1000);upd();
     addField(h, "hue", "色相 (0〜359 度)", 0, 359, g_set.hue, "0 赤、120 緑、240 青", false, "hue");
     addField(h, "sat", "彩度 (0〜100 %)", 0, 100, g_set.sat, "0 で白、100 で鮮やかな色");
     addField(h, "val", "明度 (0〜100 %)", 0, 100, g_set.val, "0 で消灯。電池の持ちには、小さい値が有利です");
-    h += F("<div id=\"sw\"></div>");
 
     h += F(R"HTML(<button type="submit" name="exit" value="0">保存</button>
 <button type="submit" name="exit" value="1">保存して終了 (Wi-Fi をオフ)</button>
 </form>
 <form method="POST" action="/reset"><button type="submit">初期値に戻す</button></form>
 <script>
-function hsv(h,s,v){s/=100;v/=100;var f=function(n){var k=(n+h/60)%6;return v-v*s*Math.max(0,Math.min(k,4-k,1));};
- return 'rgb('+Math.round(255*f(5))+','+Math.round(255*f(3))+','+Math.round(255*f(1))+')';}
-function sw(){var g=function(i){return +document.getElementById(i).value;};
- document.getElementById('sw').style.background=hsv(g('hue'),g('sat'),g('val'));}
 var ids=['bright','limit','range','hpf','trail','hue','sat','val'];
-var busy=false,again=false,extra='';
-function live(){
- var v=[];for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]).value;if(e==='')return;v.push(ids[i]+'='+e);}
- if(busy){again=true;return;}
- busy=true;var b=v.join('&')+extra;extra='';
+var wsx=null,timer=null,last=0,extra='',busy=false,again=false,body='';
+function openWs(){try{wsx=new WebSocket('ws://'+location.host+'/ws');
+ wsx.onclose=function(){wsx=null;setTimeout(openWs,1000);};}catch(e){wsx=null;}}
+function build(){var v=[];for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]).value;if(e==='')return null;v.push(ids[i]+'='+e);}
+ return v.join('&')+extra;}
+function post(b){if(busy){again=true;body=b;return;}busy=true;
  fetch('/live',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
- .catch(function(){}).then(function(){busy=false;if(again){again=false;live();}});}
+ .catch(function(){}).then(function(){busy=false;if(again){again=false;post(body);}});}
+function flush(){timer=null;
+ if(wsx&&wsx.readyState===1&&wsx.bufferedAmount>0){timer=setTimeout(flush,10);return;}
+ var b=build();if(b===null)return;extra='';last=Date.now();
+ if(wsx&&wsx.readyState===1){wsx.send(b);}else{post(b);}}
+function live(){if(timer)return;var w=33-(Date.now()-last);timer=setTimeout(flush,w>0?w:0);}
 function pick(m){extra='&mode='+m;mark(m);live();}
 function link(id){var n=document.getElementById(id),s=document.getElementById(id+'_s');
  var mn=+n.min,mx=+n.max,lg=n.dataset.log==='1';
  function toS(v){return lg?Math.round(1000*Math.log(v/mn)/Math.log(mx/mn)):v;}
  function fromS(x){return lg?Math.round(mn*Math.pow(mx/mn,x/1000)):+x;}
  s.min=lg?0:mn;s.max=lg?1000:mx;s.value=toS(+n.value);
- s.oninput=function(){n.value=fromS(+s.value);sw();live();};
- n.oninput=function(){if(n.value==='')return;var v=+n.value;v=Math.max(mn,Math.min(mx,v));s.value=toS(v);sw();live();};}
-ids.forEach(link);sw();
+ s.oninput=function(){n.value=fromS(+s.value);live();};
+ n.oninput=function(){if(n.value==='')return;var v=+n.value;v=Math.max(mn,Math.min(mx,v));s.value=toS(v);live();};}
+ids.forEach(link);openWs();
 </script>
 )HTML");
 

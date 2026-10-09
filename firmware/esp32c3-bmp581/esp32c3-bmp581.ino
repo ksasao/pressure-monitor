@@ -107,6 +107,7 @@ static void handleButton()
     switch (g_bootButton.poll()) {
         case BTN_LONG_REACHED:
             g_holdFeedback = true;              // 描画を止めて、水色のままにする
+            Serial.println(F("# BOOT long press detected"));
             displayFill(CRGB(0, 50, 50));
             break;
 
