@@ -12,6 +12,9 @@
 // ADC の誤差は数 % あるので、気になる場合はテスターの実測と突き合わせてください
 uint32_t batteryReadMilliVolts();
 
-// シリアルに 1 行出力する。例: "# battery 2.874 V"
-// 電池が入っていない (USB 給電中など) ときは "(not installed)" が付く
-void batteryReport();
+// 電池電圧を測って、結果を保存する (batteryLastMilliVolts() で読める)。
+// 起動時に 1 回と、その後は BATTERY_INTERVAL_MS ごとに呼ぶ
+void batteryMeasure();
+
+// 最後に測った電池電圧 [mV]。シリアルの CSV に出す値。測る前は 0
+uint32_t batteryLastMilliVolts();

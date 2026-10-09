@@ -5,7 +5,7 @@
 
 #include "config.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 0, 255 };
+const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50 };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -25,8 +25,11 @@ void settingsClamp()
                                   g_set.deltaLimit + (PALETTE_STEPS - 1), 100000);
     g_set.hpfShift       = clampI(g_set.hpfShift, 4, 12);
     g_set.trailStepTicks = clampI(g_set.trailStepTicks, 1, 60);
-    g_set.defaultMode    = clampI(g_set.defaultMode, 0, 2);
     g_set.brightness     = clampI(g_set.brightness, 0, 255);
+    g_set.mode           = clampI(g_set.mode, 0, 3);
+    g_set.hue            = clampI(g_set.hue, 0, 359);
+    g_set.sat            = clampI(g_set.sat, 0, 100);
+    g_set.val            = clampI(g_set.val, 0, 100);
 }
 
 void settingsLoad()
@@ -37,8 +40,11 @@ void settingsLoad()
     g_set.deltaRange     = p.getInt("range",  SETTINGS_DEFAULT.deltaRange);
     g_set.hpfShift       = p.getInt("hpf",    SETTINGS_DEFAULT.hpfShift);
     g_set.trailStepTicks = p.getInt("trail",  SETTINGS_DEFAULT.trailStepTicks);
-    g_set.defaultMode    = p.getInt("mode",   SETTINGS_DEFAULT.defaultMode);
     g_set.brightness     = p.getInt("bright", SETTINGS_DEFAULT.brightness);
+    g_set.mode           = p.getInt("pmode",  SETTINGS_DEFAULT.mode);
+    g_set.hue            = p.getInt("hue",    SETTINGS_DEFAULT.hue);
+    g_set.sat            = p.getInt("sat",    SETTINGS_DEFAULT.sat);
+    g_set.val            = p.getInt("val",    SETTINGS_DEFAULT.val);
     s_brownoutCount      = p.getUInt("bo", 0);
     p.end();
     settingsClamp();
@@ -52,14 +58,27 @@ void settingsSave()
     p.putInt("range", g_set.deltaRange);
     p.putInt("hpf",   g_set.hpfShift);
     p.putInt("trail", g_set.trailStepTicks);
-    p.putInt("mode",  g_set.defaultMode);
     p.putInt("bright", g_set.brightness);
+    p.putInt("hue",   g_set.hue);
+    p.putInt("sat",   g_set.sat);
+    p.putInt("val",   g_set.val);
+    p.end();
+}
+
+// 表示モードの切り替えのたびに、他の設定を巻き込まず、モードだけを書く
+void settingsSaveMode()
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.putInt("pmode", g_set.mode);
     p.end();
 }
 
 void settingsReset()
 {
+    const int32_t mode = g_set.mode;     // 表示モードは、そのまま残す
     g_set = SETTINGS_DEFAULT;
+    g_set.mode = mode;
     settingsSave();
 }
 

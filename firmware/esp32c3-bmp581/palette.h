@@ -6,15 +6,19 @@
  *     変化量が正 (気圧上昇): 黒青 -> 青 -> 水色 -> 白
  *     変化量が負 (気圧下降): 黒赤 -> 橙 -> 黄橙 -> 白
  *
- * deltaLimit と deltaRange は、settings.h の g_set を参照します。
+ * deltaLimit と deltaRange は引数で受け取ります (モードごとに違う。modes.h)。
  */
 #pragma once
 
 #include <stdint.h>
 #include "led_types.h"
 
-// 変化量 -> 色。delta > 0 は青系、delta < 0 は赤橙系
-CRGB deltaToColor(int32_t delta);
+// 変化量 -> 色。delta > 0 は青系、delta < 0 は赤橙系。
+// limit 未満は黒、range 以上は白。range >= limit + (PALETTE_STEPS - 1) であること
+CRGB deltaToColor(int32_t delta, int32_t limit, int32_t range);
+
+// 色相 (0〜359 度)、彩度 (0〜100 %)、明度 (0〜100 %) -> 色。標準的な HSV (FastLED の rainbow ではない)
+CRGB hsvToColor(int32_t hueDeg, int32_t satPct, int32_t valPct);
 
 // 色の RGB のうち、最大の値 (ログの led_value に使う)
 uint8_t colorPeak(const CRGB &c);

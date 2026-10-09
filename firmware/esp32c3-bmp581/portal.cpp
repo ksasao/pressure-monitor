@@ -11,6 +11,7 @@
 #include "display.h"
 #include "battery.h"
 #include "boot.h"
+#include "modes.h"
 
 static AsyncWebServer s_server(80);
 static DNSServer      s_dns;
@@ -48,6 +49,8 @@ static void handleStatus(AsyncWebServerRequest *req)
     st.freeHeap   = ESP.getFreeHeap();
     st.resetReason = bootResetReasonName();
     st.brownouts  = settingsBrownoutCount();
+    st.modeNumber = (uint8_t)(g_set.mode + 1);
+    st.modeName   = modeName((uint8_t)g_set.mode);
     req->send(200, "application/json", buildStatusJson(st));
 }
 
@@ -65,16 +68,17 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "range", g_set.deltaRange);
     postInt(req, "hpf",   g_set.hpfShift);
     postInt(req, "trail", g_set.trailStepTicks);
-    postInt(req, "mode",  g_set.defaultMode);
     postInt(req, "bright", g_set.brightness);
+    postInt(req, "hue",   g_set.hue);
+    postInt(req, "sat",   g_set.sat);
+    postInt(req, "val",   g_set.val);
 
     settingsClamp();
     settingsSave();
-    displayApplyBrightness();
-    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld mode=%ld bright=%ld\n",
+    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld\n",
                   (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
-                  (long)g_set.trailStepTicks, (long)g_set.defaultMode,
-                  (long)g_set.brightness);
+                  (long)g_set.trailStepTicks, (long)g_set.brightness,
+                  (long)g_set.hue, (long)g_set.sat, (long)g_set.val);
 
     bool exitAfter = req->hasParam("exit", true) &&
                      req->getParam("exit", true)->value() == "1";
@@ -92,11 +96,40 @@ static void handleSave(AsyncWebServerRequest *req)
     req->redirect("/?saved=1");
 }
 
+// 設定ページの操作中に、値を LED へ、すぐに反映する (保存はしない)。
+// 保存するのは「保存」を押したときだけで、保存しないまま再起動すると、元の値に戻る。
+// 表示モードの切り替えだけは、押したときに保存する (BOOT ボタンと同じ)
+static void handleLive(AsyncWebServerRequest *req)
+{
+    s_lastActivityMs = millis();
+
+    const int32_t oldMode = g_set.mode;
+    postInt(req, "bright", g_set.brightness);
+    postInt(req, "limit",  g_set.deltaLimit);
+    postInt(req, "range",  g_set.deltaRange);
+    postInt(req, "hpf",    g_set.hpfShift);
+    postInt(req, "trail",  g_set.trailStepTicks);
+    postInt(req, "hue",    g_set.hue);
+    postInt(req, "sat",    g_set.sat);
+    postInt(req, "val",    g_set.val);
+    if (req->hasParam("mode", true)) {
+        // ページの番号は 1〜4、内部は 0〜3
+        g_set.mode = (int32_t)req->getParam("mode", true)->value().toInt() - 1;
+    }
+    settingsClamp();
+
+    if (g_set.mode != oldMode) {
+        settingsSaveMode();
+        Serial.printf("# mode -> %ld (%s) [settings page]\n", (long)g_set.mode + 1,
+                      modeName((uint8_t)g_set.mode));
+    }
+    req->send(204);
+}
+
 static void handleReset(AsyncWebServerRequest *req)
 {
     s_lastActivityMs = millis();
     settingsReset();
-    displayApplyBrightness();
     Serial.println(F("# settings reset to default"));
 
     req->redirect("/?saved=1");
@@ -133,6 +166,7 @@ void portalBegin()
     s_server.on("/",       HTTP_GET,  handleRoot);
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);
+    s_server.on("/live",   HTTP_POST, handleLive);
     s_server.on("/reset",  HTTP_POST, handleReset);
     s_server.onNotFound(handleNotFound);
     s_server.begin();

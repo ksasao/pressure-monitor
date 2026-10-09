@@ -1,22 +1,20 @@
 /*
  * display.h - LED (WS2812B x5) の表示
  *
- * 表示モード (BOOT ボタンの短押しで、0 -> 1 -> 2 -> 3 -> 0 と切り替わる)
- *   0 = 気圧の変化 (LED1 がライブ値、LED2..5 は過去の LED1 の色)
- *   1 = 気圧の絶対値を 5 段階のバーで表示
- *   2 = 消灯 (省電力)
- *   3 = 全点灯 (診断用)。全 LED を白で点灯し、毎ティック LED へ送る。
- *       電源の電圧の落ち込みや、LED のデータの乱れを調べるためのモード
+ * どのモードで何を表示するかは、メインのスケッチ (esp32c3-bmp581.ino) が決めます。
+ * このモジュールは、LED への描画と送信だけを受け持ちます。
+ *   - 履歴の表示 (LED1 がライブ値、LED2..5 は過去の LED1 の色)
+ *   - 単色の表示 (全 LED が同じ色)
+ *   - モード番号の表示 (BOOT ボタンを押したとき、番号の数だけ青で点灯)
  */
 #pragma once
 
 #include <stdint.h>
 #include "led_types.h"
 
-static const uint8_t DISPLAY_MODE_COUNT = 4;     // 表示モードの数
-
-void displayBegin();                       // FastLED の初期化。全消灯する
-void displayApplyBrightness();             // settings の brightness (明るさの最大値) を反映する
+// FastLED の初期化。全 LED を白で点灯する (電源が入ったことを、すぐに知らせるため)。
+// brightness は、その白の明るさの最大値 (0〜255)
+void displayBegin(uint8_t brightness);
 void displaySelfTest();                    // 起動時の自己診断。全 LED を順に R -> G -> B
 void displayError();                       // センサ異常の表示 (呼ぶたびに赤の点滅が反転する)
 void displayFill(const CRGB &c);           // 全 LED を単色にする (長押しの合図など)
@@ -39,8 +37,17 @@ void displayNoteWake();
 void displaySetHead(const CRGB &c);        // LED1 の色 (ライブ値) を更新する
 void displayTrailShift();                  // 履歴を 1 段後ろに送り、先頭に LED1 の色を入れる
 
-void displayRender(uint8_t mode, float hPa);   // 30Hz で呼ぶ。モードに応じて描画する
-void displayModeChanged(uint8_t mode);         // 表示モードを切り替えた直後に呼ぶ
+// 30Hz で呼ぶ。モード番号の表示中は、どちらも、番号の表示を優先する。
+void displayRenderTrail(uint8_t brightness);   // 履歴の表示。brightness = 明るさの最大値 (0〜255)
+void displayRenderSolid(const CRGB &c);        // 全 LED を同じ色にする (明るさの設定は掛けない)
+
+// モード番号の表示。number の数だけ、先頭の LED を、durationMs の間、青で点灯する
+void displayShowModeNumber(uint8_t number, uint32_t durationMs);
+bool displayModeNumberActive();                // 表示中か
+
+// LED1 の色と履歴を消す。固定色モードで、気圧の履歴が残って、眠れなくなるのを防ぐ
+void displayClearTrail();
+
 
 // 状態表示 (最後の LED を、状態の色で上書きする)。設定モードで使う
 void displaySetStatus(bool enabled, const CRGB &c);

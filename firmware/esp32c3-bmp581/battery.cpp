@@ -4,6 +4,8 @@
 
 #include "config.h"
 
+static uint32_t s_lastMv = 0;
+
 uint32_t batteryReadMilliVolts()
 {
     analogReadMilliVolts(PIN_VBAT);          // 1 回目は捨てる
@@ -15,10 +17,12 @@ uint32_t batteryReadMilliVolts()
     return (sum / BATTERY_SAMPLES) * BATTERY_DIVIDER;
 }
 
-void batteryReport()
+void batteryMeasure()
 {
-    uint32_t mV = batteryReadMilliVolts();
-    Serial.printf("# battery %lu.%03lu V%s\n",
-                  (unsigned long)(mV / 1000), (unsigned long)(mV % 1000),
-                  (mV < BATTERY_PRESENT_MV) ? " (not installed)" : "");
+    s_lastMv = batteryReadMilliVolts();
+}
+
+uint32_t batteryLastMilliVolts()
+{
+    return s_lastMv;
 }

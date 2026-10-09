@@ -36,6 +36,11 @@ static const uint8_t LOG_EVERY_N = 1;
 // 1 秒ごとに「どこが遅いか」を '#' 付きの 1 行で出力する
 static const bool ENABLE_PERF_LOG = true;
 
+// ---------------------------------------------------------------- boot
+// 電源が入ったときの、白の全点灯を見せる最短の時間 [ms]。
+// この後に、自己診断 (赤 -> 緑 -> 青の順に 1 個ずつ点灯) が続く
+static const uint32_t BOOT_WHITE_MS = 500;
+
 // ----------------------------------------------------------------- power
 // CPU クロック [MHz]。80 にしています。
 // 40MHz では、ライトスリープから復帰した直後に、LED へのデータの補充が間に合わず、
@@ -136,11 +141,6 @@ static const uint32_t SETTINGS_IDLE_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 // ---------------------------------------------------------------- display
 // パレットの点数。(deltaRange - deltaLimit) をこの数 - 1 で割って区間にします
 static const int32_t PALETTE_STEPS = 4;
-
-// モード 1 (気圧バー) の表示範囲 [hPa] と、満杯の LED の明るさ
-static const float   BAR_MIN_HPA   = 995.0f;
-static const float   BAR_MAX_HPA   = 1025.0f;
-static const uint8_t BAR_MAX_VALUE = 120;
 
 // 起動時の自己診断とエラー表示の明るさ
 static const uint8_t SELFTEST_VALUE = 120;

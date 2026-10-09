@@ -14,6 +14,9 @@
  * ボード設定 (Arduino IDE)
  *   Board            : ESP32C3 Dev Module
  *   USB CDC On Boot  : Enabled      <-- Disabled だと Serial が出ません
+ *   Partition Scheme : Huge APP (3MB No OTA/1MB SPIFFS)
+ *                                   <-- 既定 (1.2MB APP) だと、容量の 9 割近くになります
+ *   Flash Size       : 4MB (32Mb)   <-- 既定のまま
  *
  * --- 動作 ---
  * 約 30Hz (33ms 周期) で、センサの読み取り -> HPF -> 色 -> LED 表示 -> ログ を
@@ -39,7 +42,8 @@
  *   boot.*              リセットの理由、通常モード / 設定モードの切り替え
  *   sensor.*            気圧センサ BMP581
  *   high_pass_filter.*  ハイパスフィルタ (class HighPassFilter)
- *   palette.*           変化量から色への変換
+ *   modes.*             表示モード (標準 / ドライブ / カスタム / 固定色) と、感度
+ *   palette.*           変化量から色への変換、HSV から色への変換
  *   display.*           LED の表示
  *   button.*            ボタン (class Button。短押し / 長押し)
  *   battery.*           電池電圧
@@ -58,6 +62,7 @@
 #include "sensor.h"
 #include "high_pass_filter.h"
 #include "palette.h"
+#include "modes.h"
 #include "display.h"
 #include "button.h"
 #include "battery.h"
@@ -65,11 +70,15 @@
 #include "portal.h"
 #include "power.h"
 
-// 表示モード: 0 = 気圧変化(HPF), 1 = 気圧バー, 2 = 消灯(省電力), 3 = 全点灯(診断用)
-static uint8_t  g_mode = 0;
+// 表示モード (modes.h): 0 = 標準, 1 = ドライブ, 2 = カスタム, 3 = 固定色。電源を切っても残る
+// 今のモードは g_set.mode が持つ (設定ページからも変えられるため、ここでは複製しない)
+static inline uint8_t currentMode() { return (uint8_t)g_set.mode; }
+static bool     g_modeDirty = false;       // モードを切り替えたが、まだ保存していない
+
+// BOOT ボタンを押したときの、モード番号の表示時間 [ms]
+static const uint32_t MODE_NUMBER_MS = 2000;
 
 static bool     g_sensorReady  = false;
-static float    g_lastHpa      = 0.0f;     // バー表示用に最新値を保持
 static uint8_t  g_shiftCount   = 0;
 static bool     g_holdFeedback = false;    // BOOT 長押し中 (描画を止めて合図を出す)
 
@@ -85,7 +94,8 @@ static SerialLog      g_log;
 static PerfStats      g_perf;
 
 // BOOT ボタン (どちらも、ボタンを離したときに動作する)
-//   短押し : 表示モードを切り替え
+//   短押し : 今のモードの番号を、番号の数だけ LED を青で点灯して知らせる (2 秒間)。
+//            その 2 秒の間に、続けて押すと、次のモードに切り替わる (4 の次は 1)
 //   長押し : 設定モード (Wi-Fi) と通常モードを切り替え
 //
 // 切り替えは再起動で行う。ボタンを押したまま再起動すると、IO9 が Low のまま
@@ -107,9 +117,13 @@ static void handleButton()
 
         case BTN_SHORT:
             g_holdFeedback = false;
-            g_mode = (g_mode + 1) % DISPLAY_MODE_COUNT;
-            Serial.printf("# mode -> %u\n", g_mode);
-            displayModeChanged(g_mode);
+            // 番号の表示中なら次のモードへ。表示していなければ、今の番号を見せるだけ
+            if (displayModeNumberActive()) {
+                g_set.mode = (g_set.mode + 1) % MODE_COUNT;
+                g_modeDirty = true;
+                Serial.printf("# mode -> %u (%s)\n", currentMode() + 1, modeName(currentMode()));
+            }
+            displayShowModeNumber(currentMode() + 1, MODE_NUMBER_MS);
             break;
 
         default:
@@ -118,7 +132,8 @@ static void handleButton()
 }
 
 // 気圧の CSV を 1 行出す (LOG_EVERY_N ティックに 1 回)
-//   millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value
+//   millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value,battery_mV
+// battery_mV は最後に測った電池電圧 (BATTERY_INTERVAL_MS ごとに測る)。毎行、その値を出す
 static void logPressure(uint32_t nowMs, const SensorSample &s, int32_t hpf, uint8_t ledValue)
 {
     static uint8_t count = 0;
@@ -126,9 +141,9 @@ static void logPressure(uint32_t nowMs, const SensorSample &s, int32_t hpf, uint
     count = 0;
 
     char buf[96];
-    int len = snprintf(buf, sizeof(buf), "%lu,%.3f,%ld,%ld,%.2f,%.2f,%u\n",
+    int len = snprintf(buf, sizeof(buf), "%lu,%.3f,%ld,%ld,%.2f,%.2f,%u,%lu\n",
                        (unsigned long)nowMs, s.hPa, (long)s.raw, (long)hpf,
-                       s.tempC, s.altM, ledValue);
+                       s.tempC, s.altM, ledValue, (unsigned long)batteryLastMilliVolts());
     if (len > (int)sizeof(buf) - 1) len = sizeof(buf) - 1;   // 切り詰められた場合の保険
 
     g_log.writeLine(buf, (size_t)len, nowMs);
@@ -146,14 +161,16 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     if (st == SENSOR_I2C_ERROR) g_perf.i2cError();
     if (st != SENSOR_OK) return;
 
-    g_lastHpa = s.hPa;
     portalSetSensor(s.hPa, s.tempC);            // 設定ページの表示用
 
-    int32_t hpf   = g_pressureHpf.update(s.raw, g_set.hpfShift);
-    CRGB    color = deltaToColor(hpf);
+    const SenseParams p = modeSense(currentMode());
+    int32_t hpf   = g_pressureHpf.update(s.raw, p.hpfShift);
+    CRGB    color = deltaToColor(hpf, p.deltaLimit, p.deltaRange);
 
-    // 平滑化せずそのまま反映する。ここが応答性の要です
-    displaySetHead(color);
+    // 平滑化せずそのまま反映する。ここが応答性の要です。
+    // 固定色モードでは使わない。履歴を消しておく (残ると、眠れなくなる)
+    if (modeIsSolid(currentMode())) displayClearTrail();
+    else                     displaySetHead(color);
 
     if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
 }
@@ -169,15 +186,19 @@ void setup()
     // Wi-Fi は 80MHz 以上が必要なので、設定モードのときだけ上げる
     setCpuFrequencyMhz(bootIsSettingsMode() ? SETTINGS_CPU_MHZ : CPU_MHZ);
 
+    // 電源が入ったら、できるだけ速やかに、LED を白で全点灯する。
+    // 明るさの設定だけは必要なので、先に読む (数 ms)。シリアルの接続待ち (最大 2 秒) などの
+    // 前に点灯することで、電源が入ったことをすぐに知らせる
+    settingsLoad();                 // 保存された設定 (なければ既定値)
+    displayBegin((uint8_t)g_set.brightness);
+    const uint32_t whiteStartMs = millis();
+
     g_log.begin();
 
     Serial.println();
     Serial.println(F("=== PressureMonitor bring-up (FastLED) ==="));
     Serial.printf("# reset reason: %s%s\n", bootResetReasonName(),
                   bootIsSettingsMode() ? " -> settings mode" : "");
-
-    settingsLoad();                 // 保存された設定 (なければ既定値)
-    g_mode = (uint8_t)g_set.defaultMode;
 
     // 電源の落ち込みによるリセットは、累計を残しておく (設定ページで確認できる)
     if (bootWasBrownout()) {
@@ -187,7 +208,9 @@ void setup()
     }
 
     g_bootButton.begin();
-    displayBegin();
+
+    // 白の点灯を、最低でも BOOT_WHITE_MS は見せてから、自己診断に進む
+    while ((millis() - whiteStartMs) < BOOT_WHITE_MS) delay(10);
     displaySelfTest();
 
     // 設定モードは、センサの有無にかかわらず Wi-Fi を起動する
@@ -196,17 +219,19 @@ void setup()
 
     g_sensorReady = sensorBegin();
     if (g_sensorReady) {
+        const SenseParams p = modeSense(currentMode());
+        Serial.printf("# mode %u (%s)\n", currentMode() + 1, modeName(currentMode()));
         Serial.printf("# tick %lu ms (%lu Hz) / HPF shift %ld"
                       " / limit %ld range %ld (1/64 Pa)\n",
                       (unsigned long)TICK_INTERVAL_MS,
                       1000UL / TICK_INTERVAL_MS,
-                      (long)g_set.hpfShift,
-                      (long)g_set.deltaLimit, (long)g_set.deltaRange);
+                      (long)p.hpfShift,
+                      (long)p.deltaLimit, (long)p.deltaRange);
         Serial.printf("# cpu %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
-        batteryReport();            // 起動時に 1 回。以降は 1 分ごと
+        batteryMeasure();           // 起動時に 1 回。以降は 1 分ごと
         Serial.println(F("ready."));
         Serial.println(F("millis,pressure_hPa,raw,hpf,"
-                         "temperature_C,altitude_m,led_value"));
+                         "temperature_C,altitude_m,led_value,battery_mV"));
     }
 
     uint32_t now = millis();
@@ -220,6 +245,14 @@ void setup()
 void loop()
 {
     handleButton();
+
+    // モード番号の表示が終わったら、選んだモードを保存する
+    // (押すたびに書かず、フラッシュの書き込みを減らす)
+    if (g_modeDirty && !displayModeNumberActive()) {
+        g_modeDirty = false;
+        settingsSaveMode();
+    }
+
     powerService(millis());         // USB ホストが見えているかを調べる
 
     // 設定モード: DNS・電池電圧の監視・タイムアウト。
@@ -252,7 +285,7 @@ void loop()
     const bool hostPresent = powerHostPresent(now);     // USB ホストが見えるか
     sampleOnce(now, hostPresent);
 
-    if ((int32_t)(++g_shiftCount) >= g_set.trailStepTicks) {
+    if ((int32_t)(++g_shiftCount) >= modeSense(currentMode()).trailStepTicks) {
         g_shiftCount = 0;
         displayTrailShift();
     }
@@ -265,14 +298,18 @@ void loop()
         if (bootIsSettingsMode()) {
             displaySetStatus(true, portalHasClient() ? CRGB(0, 60, 0) : CRGB(0, 40, 40));
         }
-        displayRender(g_mode, g_lastHpa);
+        if (modeIsSolid(currentMode())) {
+            displayRenderSolid(hsvToColor(g_set.hue, g_set.sat, g_set.val));
+        } else {
+            displayRenderTrail((uint8_t)g_set.brightness);
+        }
     }
     g_perf.render(micros() - tC);
 
     // 電池電圧は 1 分に 1 回。描画のあとに行うので、LED の更新には影響しない
     if (now - g_lastBatMs >= BATTERY_INTERVAL_MS) {
         g_lastBatMs = now;
-        batteryReport();
+        batteryMeasure();
     }
 
     if (hostPresent) g_perf.report(now, g_log);

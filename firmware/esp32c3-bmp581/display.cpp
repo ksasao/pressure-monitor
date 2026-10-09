@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 #include "config.h"
-#include "settings.h"
+#include "modes.h"
 
 static CRGB leds[NUM_LEDS];
 
@@ -19,12 +19,18 @@ static CRGB s_statusColor   = CRGB::Black;
 
 // 最後に LED へ送った内容。内容が変わらないときは、送らない (config.h の LED_SKIP_UNCHANGED)
 static CRGB     s_lastSent[NUM_LEDS];
+static uint8_t  s_lastSentBrightness = 255;
 static bool     s_lastSentValid = false;
 static uint32_t s_lastSentMs    = 0;
 
 // ライトスリープから復帰してから、まだ LED へ送っていないか。
 // 復帰した直後の、最初の送信は化けることがあるので、その 1 回だけ 2 回送る
 static bool s_afterWake = false;
+
+// モード番号の表示 (BOOT ボタンを押したとき、番号の数だけ LED を青で点灯する)
+static uint8_t  s_overlayCount   = 0;
+static uint32_t s_overlayUntilMs = 0;
+static bool     s_overlayOn      = false;
 
 static void applyStatus()
 {
@@ -34,6 +40,7 @@ static void applyStatus()
 // FastLED.show() を、そのまま呼ぶ。s_lastSent と食い違うので、記録を無効にする
 static void showRaw()
 {
+    FastLED.setBrightness(255);     // 合図や自己診断は、明るさの設定に関わらず見えるように
     FastLED.show();
     s_lastSentValid = false;
 }
@@ -45,9 +52,9 @@ static bool isBlack(const CRGB &c)
 
 // 今の表示 (leds) が、最後に送った内容と同じか。
 // memcmp / memcpy は、FastLED の同名の関数と曖昧になるので、使わない
-static bool sameAsLastSent()
+static bool sameAsLastSent(uint8_t brightness)
 {
-    if (!s_lastSentValid) return false;
+    if (!s_lastSentValid || brightness != s_lastSentBrightness) return false;
     for (uint8_t i = 0; i < NUM_LEDS; i++) {
         if (leds[i].r != s_lastSent[i].r ||
             leds[i].g != s_lastSent[i].g ||
@@ -56,8 +63,9 @@ static bool sameAsLastSent()
     return true;
 }
 
-static void rememberSent()
+static void rememberSent(uint8_t brightness)
 {
+    s_lastSentBrightness = brightness;
     for (uint8_t i = 0; i < NUM_LEDS; i++) s_lastSent[i] = leds[i];
     s_lastSentValid = true;
 }
@@ -71,13 +79,14 @@ static void rememberSent()
 //     (40MHz では化けた。config.h の CPU_MHZ を参照)、点灯し始めのときだけで、
 //     電力への影響はほぼない
 //   - force = true のときは、内容が同じでも、必ず送る (診断用の全点灯モード)
-static void showFrame(bool force = false)
+static void showFrame(uint8_t brightness, bool force = false)
 {
     uint32_t now = millis();
 
     bool refresh = (LED_REFRESH_MS > 0) && ((now - s_lastSentMs) >= LED_REFRESH_MS);
-    if (!force && LED_SKIP_UNCHANGED && sameAsLastSent() && !refresh) return;
+    if (!force && LED_SKIP_UNCHANGED && sameAsLastSent(brightness) && !refresh) return;
 
+    FastLED.setBrightness(brightness);
     FastLED.show();
     if (s_afterWake) {
         FastLED.wait(5);
@@ -86,7 +95,7 @@ static void showFrame(bool force = false)
     }
 
     s_afterWake = false;
-    rememberSent();
+    rememberSent(brightness);
     s_lastSentMs = now;
 }
 
@@ -102,60 +111,35 @@ static void ledSweep(const CHSV &color, uint16_t stepMs)
     showRaw();
 }
 
-// 30Hz で呼ばれる。LED1 はライブ値、LED2..5 は履歴
-static void renderTrail()
+// モード番号の表示中か
+static bool overlayActive()
 {
-    leds[0] = s_head;
-    for (uint8_t i = 1; i < NUM_LEDS; i++) leds[i] = s_trail[i];
-    applyStatus();
-    showFrame();
+    if (!s_overlayOn) return false;
+    if ((int32_t)(millis() - s_overlayUntilMs) >= 0) { s_overlayOn = false; return false; }
+    return true;
 }
 
-// 気圧の絶対値を 5 段階のバーで表示 (低圧=青 -> 高圧=赤)
-// FastLED の hue は 0=赤 / 96=緑 / 160=青 の 8bit
-static void renderBar(float hPa)
+// 番号の数だけ、先頭から青で点灯する。明るさは、設定に関わらず一定
+static void renderOverlay()
 {
-    float t = (hPa - BAR_MIN_HPA) / (BAR_MAX_HPA - BAR_MIN_HPA);
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-
-    float lit = t * NUM_LEDS;   // 何個分点灯するか (小数)
-
     for (uint8_t i = 0; i < NUM_LEDS; i++) {
-        float f = lit - (float)i;           // この LED の点灯率 0..1
-        if (f < 0.0f) f = 0.0f;
-        if (f > 1.0f) f = 1.0f;
-
-        uint8_t hue = 160 - (uint8_t)(i * (160 / (NUM_LEDS - 1)));  // 160 -> 0
-        leds[i] = CHSV(hue, 255, (uint8_t)(f * BAR_MAX_VALUE));
+        leds[i] = (i < s_overlayCount) ? CRGB(0, 0, 160) : CRGB::Black;
     }
     applyStatus();
-    showFrame();
+    showFrame(255);
 }
 
-// 診断用 (モード 3): 全 LED を白で点灯する。内容が変わらなくても、毎ティック送る。
-// 明るさは、設定の brightness (最大値) で抑えられる
-static void renderAllOn()
-{
-    fill_solid(leds, NUM_LEDS, CRGB::White);
-    applyStatus();
-    showFrame(true);
-}
-
-void displayBegin()
+void displayBegin(uint8_t brightness)
 {
     for (uint8_t i = 0; i < NUM_LEDS; i++) s_trail[i] = CRGB::Black;
 
     FastLED.addLeds<WS2812B, PIN_NEO, GRB>(leds, NUM_LEDS);
-    displayApplyBrightness();
-    fill_solid(leds, NUM_LEDS, CRGB::Black);
-    showRaw();
-}
 
-// 全ての色に掛かる明るさの最大値。255 なら、パレットの値のまま
-void displayApplyBrightness()
-{
-    FastLED.setBrightness((uint8_t)g_set.brightness);
+    // 最初の送信で、すぐに白にする (黒を挟まない)
+    fill_solid(leds, NUM_LEDS, CRGB::White);
+    FastLED.setBrightness(brightness);
+    FastLED.show();
+    s_lastSentValid = false;
 }
 
 // 起動時の自己診断: 全 LED を順に R -> G -> B
@@ -217,30 +201,44 @@ void displayTrailShift()
     s_trail[0] = s_head;
 }
 
-void displayRender(uint8_t mode, float hPa)
+// 30Hz で呼ばれる。LED1 はライブ値、LED2..5 は履歴。
+// brightness は、全ての色に掛かる明るさの最大値 (255 なら、パレットの値のまま)
+void displayRenderTrail(uint8_t brightness)
 {
-    switch (mode) {
-        case 0: renderTrail();   break;
-        case 1: renderBar(hPa);  break;
-        case 3: renderAllOn();   break;     // 診断用の全点灯
-        default:
-            // 2 = 消灯。ただし状態表示があるときは、そのために更新する
-            if (s_statusEnabled) {
-                fill_solid(leds, NUM_LEDS, CRGB::Black);
-                applyStatus();
-                showFrame();
-            }
-            break;
-    }
+    if (overlayActive()) { renderOverlay(); return; }
+
+    leds[0] = s_head;
+    for (uint8_t i = 1; i < NUM_LEDS; i++) leds[i] = s_trail[i];
+    applyStatus();
+    showFrame(brightness);
 }
 
-void displayModeChanged(uint8_t mode)
+// 全 LED を同じ色にする。明るさの設定は掛けない (色の明度で決める)
+void displayRenderSolid(const CRGB &c)
 {
-    if (mode == 2) {
-        fill_solid(leds, NUM_LEDS, CRGB::Black);
-        applyStatus();
-        showFrame();
-    }
+    if (overlayActive()) { renderOverlay(); return; }
+
+    fill_solid(leds, NUM_LEDS, c);
+    applyStatus();
+    showFrame(255);
+}
+
+void displayShowModeNumber(uint8_t number, uint32_t durationMs)
+{
+    s_overlayCount   = number > NUM_LEDS ? NUM_LEDS : number;
+    s_overlayUntilMs = millis() + durationMs;
+    s_overlayOn      = true;
+}
+
+bool displayModeNumberActive()
+{
+    return overlayActive();
+}
+
+void displayClearTrail()
+{
+    s_head = CRGB::Black;
+    for (uint8_t i = 0; i < NUM_LEDS; i++) s_trail[i] = CRGB::Black;
 }
 
 void displaySetStatus(bool enabled, const CRGB &c)

@@ -17,6 +17,8 @@ struct DeviceStatus {
     uint32_t    freeHeap;       // 空きメモリ [B]
     const char *resetReason;    // 前回の再起動の理由
     uint32_t    brownouts;      // ブラウンアウトによる再起動の累計
+    uint8_t     modeNumber;     // 今の表示モードの番号 (1〜4)
+    const char *modeName;       // 今の表示モードの名前
 };
 
 // 設定ページ。現在の設定を埋め込む。saved = true なら「保存しました」を出す。
