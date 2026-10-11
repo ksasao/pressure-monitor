@@ -138,6 +138,55 @@ static const bool PORTAL_DIRECT_HTML = false;
 // 設定ページの操作 (表示・保存) がないまま、この時間がたったら通常モードに戻る
 static const uint32_t SETTINGS_IDLE_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 
+// ------------------------------------------------- link (複数台の表示, ESP-NOW)
+// 役割 (設定モードで選ぶ。link.h):
+//   単体 : 今までどおり。無線はオフ
+//   送信 : 気圧のデータを、ESP-NOW のブロードキャストで送る
+//   ハブ : 送信の装置のデータを受け取り、スマホのブラウザに表示する。自分の気圧も、同じように
+//          表示する。設定ページで指定した Wi-Fi (ルーター) に接続するか、指定がなければ、
+//          自分でアクセスポイント (HUB_SSID、http://192.168.4.1/) になる (hub.h)
+// 送信とハブは、無線を使うため、ライトスリープに入りません (電池の持ちが短くなります)。
+//
+// ハブが、自分でアクセスポイントになるときのチャンネル (Wi-Fi のルーターに接続するときは、
+// ルーターのチャンネルになります)。送信の装置は、ハブのチャンネルを自動で探すので、
+// 変えても、送信の装置に書き込み直す必要はありません。混雑した場所では、空いている
+// チャンネルに変えてください
+static const uint8_t LINK_CHANNEL = 1;
+
+// チャンネルの自動探索 (link.h)
+//   LINK_BEACON_INTERVAL_MS : ハブがビーコンを送る間隔
+//   LINK_SCAN_DWELL_MS      : 送信の装置が、1 つのチャンネルで、ビーコンを待つ時間
+//                             (ビーコンの間隔より長くする。13 チャンネルで最大 約 4 秒)
+//   LINK_BEACON_LOST_MS     : ビーコンがこの時間途切れたら、探し直す
+static const uint32_t LINK_BEACON_INTERVAL_MS = 250;
+static const uint32_t LINK_SCAN_DWELL_MS      = 300;
+static const uint32_t LINK_BEACON_LOST_MS     = 3000;
+
+// ハブが Wi-Fi (ルーター) に接続を試みる時間。つながらなければ、自分でアクセスポイントになる
+static const uint32_t HUB_STA_TIMEOUT_MS = 20000;
+
+// ハブがルーターに接続している間も、自分のアクセスポイント (HUB_SSID) を立ち上げたままにする。
+// スマホをこれにつないで http://192.168.4.1/ を開けば、PC がなくても、ルーターから割り当てられた
+// IP アドレスを確認できます (表示ページの上部)。データも、そのまま見られます。
+// アクセスポイントのチャンネルは、ルーターのチャンネルに合わせて変わります
+static const bool HUB_KEEP_AP_WITH_STA = true;
+
+// ハブの mDNS の名前。http://pressure-hub.local/ で開ける (Wi-Fi のルーターに接続したとき)
+static const char *HUB_MDNS_NAME = "pressure-hub";
+
+// 1 回の送信にまとめるサンプル数。3 なら、約 100ms ごとに 1 回送る (30Hz のデータ)
+static const uint8_t LINK_SAMPLES_PER_PACKET = 3;
+
+// 送信の装置の送信出力。ブラウンアウトが出る場合は、WIFI_POWER_8_5dBm などに下げます
+#define LINK_TX_POWER WIFI_POWER_19_5dBm
+
+// ハブのアクセスポイント。パスワードは付けません
+static const char   *HUB_SSID        = "pressure-hub";
+static const uint8_t HUB_MAX_CLIENTS = 4;            // 同時に表示できるスマホの台数
+
+// ハブがスマホへデータを送る間隔 [ms]
+static const uint32_t HUB_PUSH_INTERVAL_MS = 100;
+
 // ---------------------------------------------------------------- display
 // パレットの点数。(deltaRange - deltaLimit) をこの数 - 1 で割って区間にします
 static const int32_t PALETTE_STEPS = 4;

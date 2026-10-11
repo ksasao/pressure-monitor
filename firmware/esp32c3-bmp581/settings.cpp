@@ -4,8 +4,9 @@
 #include <Preferences.h>
 
 #include "config.h"
+#include "link.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50 };
+const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, 1, "", "" };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -30,6 +31,8 @@ void settingsClamp()
     g_set.hue            = clampI(g_set.hue, 0, 359);
     g_set.sat            = clampI(g_set.sat, 0, 100);
     g_set.val            = clampI(g_set.val, 0, 100);
+    g_set.role           = clampI(g_set.role, 0, LINK_ROLE_COUNT - 1);
+    g_set.node           = clampI(g_set.node, 1, LINK_MAX_NODE);
 }
 
 void settingsLoad()
@@ -45,6 +48,10 @@ void settingsLoad()
     g_set.hue            = p.getInt("hue",    SETTINGS_DEFAULT.hue);
     g_set.sat            = p.getInt("sat",    SETTINGS_DEFAULT.sat);
     g_set.val            = p.getInt("val",    SETTINGS_DEFAULT.val);
+    g_set.role           = p.getInt("role",   SETTINGS_DEFAULT.role);
+    g_set.node           = p.getInt("node",   SETTINGS_DEFAULT.node);
+    p.getString("wssid", g_set.wifiSsid, sizeof(g_set.wifiSsid));
+    p.getString("wpass", g_set.wifiPass, sizeof(g_set.wifiPass));
     s_brownoutCount      = p.getUInt("bo", 0);
     p.end();
     settingsClamp();
@@ -62,6 +69,10 @@ void settingsSave()
     p.putInt("hue",   g_set.hue);
     p.putInt("sat",   g_set.sat);
     p.putInt("val",   g_set.val);
+    p.putInt("role",  g_set.role);
+    p.putInt("node",  g_set.node);
+    p.putString("wssid", g_set.wifiSsid);
+    p.putString("wpass", g_set.wifiPass);
     p.end();
 }
 
@@ -76,10 +87,34 @@ void settingsSaveMode()
 
 void settingsReset()
 {
-    const int32_t mode = g_set.mode;     // 表示モードは、そのまま残す
+    // 表示モード、役割、装置の番号、Wi-Fi は、そのまま残す
+    const AppSettings keep = g_set;
     g_set = SETTINGS_DEFAULT;
-    g_set.mode = mode;
+    g_set.mode = keep.mode;
+    g_set.role = keep.role;
+    g_set.node = keep.node;
+    memcpy(g_set.wifiSsid, keep.wifiSsid, sizeof(g_set.wifiSsid));
+    memcpy(g_set.wifiPass, keep.wifiPass, sizeof(g_set.wifiPass));
     settingsSave();
+}
+
+String settingsHubLastIp()
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, true);
+    String ip = p.getString("hubip", "");
+    p.end();
+    return ip;
+}
+
+// 変わったときだけ書く (フラッシュの書き込みを減らす)
+void settingsSaveHubLastIp(const String &ip)
+{
+    if (ip == settingsHubLastIp()) return;
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.putString("hubip", ip);
+    p.end();
 }
 
 uint32_t settingsBrownoutCount()

@@ -45,3 +45,6 @@ bool powerHostPresent(uint32_t nowMs);
 // 眠れない (条件を満たさない、または失敗) ときは、delay(1) で待つ。
 // remainingMs: 次のティックまでの時間 [ms]
 void powerIdle(uint32_t nowMs, uint32_t remainingMs);
+
+// 以後、ライトスリープに入らない (無線を使う、送信・ハブの役割のとき)
+void powerKeepAwake();

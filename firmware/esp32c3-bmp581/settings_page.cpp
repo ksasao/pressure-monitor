@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "settings.h"
+#include "link.h"
 
 // スライドバーと数値の入力欄を 1 組出す。
 // 値は、数値の入力欄 (name = id) がフォームで送られる。スライドバーは、ページのスクリプトが
@@ -32,6 +33,21 @@ static void addField(String &h, const char *id, const char *label, int32_t minV,
     h += F("</small>");
 }
 
+// HTML の属性値に入れる文字列 (SSID など) を、エスケープして足す
+static void appendHtmlEscaped(String &h, const char *s)
+{
+    for (; *s; s++) {
+        switch (*s) {
+            case '&':  h += F("&amp;");  break;
+            case '<':  h += F("&lt;");   break;
+            case '>':  h += F("&gt;");   break;
+            case '"':  h += F("&quot;"); break;
+            case '\'': h += F("&#39;");  break;
+            default:   h += *s;          break;
+        }
+    }
+}
+
 String buildSettingsPage(bool saved)
 {
     String h;
@@ -44,7 +60,11 @@ body{font-family:sans-serif;margin:16px;max-width:560px}
 h1{font-size:1.25em}
 h2{font-size:1.1em;margin:28px 0 0;padding-top:12px;border-top:1px solid #ccc}
 label{display:block;margin-top:16px;font-weight:bold}
-input{font-size:1.1em;box-sizing:border-box;padding:8px}
+input,select{font-size:1.1em;box-sizing:border-box;padding:8px}
+select{max-width:100%}
+details{margin-top:16px}
+summary{font-weight:bold;cursor:pointer;padding:8px 0}
+summary .chg{font-weight:normal;color:#36c;margin-left:6px}
 .row{display:flex;gap:12px;align-items:center}
 .row input[type=range]{flex:1;min-width:0;padding:0}
 .row input[type=number]{width:6.5em}
@@ -65,7 +85,7 @@ button{font-size:1.1em;padding:12px 16px;margin:16px 8px 0 0}
     h += F(R"HTML(<div class="box" id="st">読み込み中...</div>
 <script>
 function upd(){fetch('/status').then(function(r){return r.json();}).then(function(j){
- var s='今のモード: '+j.mode_no+' '+j.mode_name+'<br>'
+ var s='今のモード: '+j.mode_no+' '+j.mode_name+' / 役割: '+j.role+' (番号 '+j.node+')<br>'
  +'電池: '+(j.vbat_mv/1000).toFixed(3)+' V (最低 '+(j.vbat_min_mv/1000).toFixed(3)+' V)<br>'
  +'気圧: '+j.hpa.toFixed(2)+' hPa / 温度: '+j.temp_c.toFixed(1)+' ℃<br>'
  +'接続中の端末: '+j.stations+' 台 / 空きメモリ: '+j.heap+' B<br>'
@@ -111,6 +131,69 @@ setInterval(upd,1000);upd();
     addField(h, "sat", "彩度 (0〜100 %)", 0, 100, g_set.sat, "0 で白、100 で鮮やかな色");
     addField(h, "val", "明度 (0〜100 %)", 0, 100, g_set.val, "0 で消灯。電池の持ちには、小さい値が有利です");
 
+    // 複数台の表示。リアルタイムには反映せず、保存して再起動すると有効になる
+    h += F("<h2>複数台の表示 (ESP-NOW)</h2>"
+           "<small>送信の装置の気圧を、ハブが集めて、スマホのブラウザに表示します。"
+           "「保存して終了」で再起動すると有効になります。</small><label>役割</label><select name=\"role\" id=\"role\" onchange=\"roleUi()\">");
+    static const char *const ROLE_LABELS[LINK_ROLE_COUNT] = {
+        "単体 (無線はオフ。今までどおり)",
+        "送信 (ハブへ気圧を送る)",
+        "ハブ (集めて表示する)",
+    };
+    for (int i = 0; i < LINK_ROLE_COUNT; i++) {
+        h += F("<option value=\"");
+        h += String(i);
+        h += (g_set.role == i) ? F("\" selected>") : F("\">");
+        h += ROLE_LABELS[i];
+        h += F("</option>");
+    }
+    h += F("</select><small>送信とハブは、無線を使うため、ライトスリープに入らず、電池の持ちが短くなります。"
+           "ハブは USB 給電を推奨します。</small>");
+
+    // 役割に関係する項目は、その役割を選んだときだけ表示する (ページのスクリプトが切り替える)。
+    // 隠した入力欄には、ブラウザが自動でフォーカスしないので、ページを開いたときに、下の入力欄まで
+    // スクロールしたり、キーボードが出たりしない
+    h += F("<div id=\"netopt\"><label>装置の番号</label><input type=\"number\" name=\"node\" min=\"1\" max=\"");
+    h += String(LINK_MAX_NODE);
+    h += F("\" value=\"");
+    h += String(g_set.node);
+    h += F("\" style=\"width:6.5em\"><small>ハブの画面で、装置を見分けるのに使います。装置ごとに、別の番号にしてください。"
+           "ハブ自身の気圧も、この番号で表示します。</small></div>");
+
+    // ハブの接続先。普段は閉じておく (SSID とパスワードの組を、ブラウザがログインの欄とみなして、
+    // 開いたときに、SSID の欄にフォーカスすることがあるため)。
+    // パスワードは、ページに載せない (空欄のまま保存すると、今のパスワードを残す)
+    h += F("<div id=\"hubopt\">");
+    const String lastIp = settingsHubLastIp();
+    if (lastIp.length() > 0) {
+        h += F("<small>前回、ルーターに接続したときのアドレス: http://");
+        h += lastIp;
+        h += F("/ (または http://");
+        h += HUB_MDNS_NAME;
+        h += F(".local/)</small>");
+    }
+    h += F("<details><summary>ハブの接続先の Wi-Fi: ");
+    if (g_set.wifiSsid[0]) {
+        appendHtmlEscaped(h, g_set.wifiSsid);
+    } else {
+        h += F("なし (ハブが自分でアクセスポイントになる)");
+    }
+    h += F(" <span class=\"chg\">変更する</span></summary>"
+           "<label>SSID</label><input type=\"text\" name=\"wssid\" maxlength=\"32\" "
+           "autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\" style=\"width:100%\" value=\"");
+    appendHtmlEscaped(h, g_set.wifiSsid);
+    h += F("\"><small>2.4GHz の Wi-Fi (WPA2 パーソナルなど) を指定します。空欄なら、ハブが自分でアクセスポイント (");
+    h += HUB_SSID;
+    h += F("、パスワードなし、http://192.168.4.1/) になります。接続できないときも、");
+    h += String(HUB_STA_TIMEOUT_MS / 1000UL);
+    h += F(" 秒後に、自分でアクセスポイントになります。送信の装置は、ハブのチャンネルを自動で探すので、"
+           "設定は要りません。</small>"
+           "<label>パスワード</label><input type=\"password\" name=\"wpass\" maxlength=\"64\" "
+           "autocomplete=\"new-password\" style=\"width:100%\" placeholder=\"");
+    h += g_set.wifiPass[0] ? F("保存済み (変えないときは空欄)") : F("未設定");
+    h += F("\"><label style=\"font-weight:normal\"><input type=\"checkbox\" name=\"wpclr\" value=\"1\"> "
+           "パスワードを消去する (パスワードのないネットワーク)</label></details></div>");
+
     h += F(R"HTML(<button type="submit" name="exit" value="0">保存</button>
 <button type="submit" name="exit" value="1">保存して終了 (Wi-Fi をオフ)</button>
 </form>
@@ -139,6 +222,13 @@ function link(id){var n=document.getElementById(id),s=document.getElementById(id
  s.oninput=function(){n.value=fromS(+s.value);live();};
  n.oninput=function(){if(n.value==='')return;var v=+n.value;v=Math.max(mn,Math.min(mx,v));s.value=toS(v);live();};}
 ids.forEach(link);openWs();
+function roleUi(){var r=+document.getElementById('role').value;
+ document.getElementById('netopt').style.display=r>0?'':'none';
+ document.getElementById('hubopt').style.display=r===2?'':'none';}
+roleUi();
+// ページを開いたときは、上端を表示する (ブラウザが入力欄にフォーカスしても、外す)
+window.addEventListener('load',function(){var a=document.activeElement;
+ if(a&&(a.tagName==='INPUT'||a.tagName==='SELECT')){a.blur();window.scrollTo(0,0);}});
 </script>
 )HTML");
 
@@ -173,6 +263,10 @@ String buildStatusJson(const DeviceStatus &s)
     j += String(s.modeNumber);
     j += F(",\"mode_name\":\"");
     j += s.modeName;
-    j += F("\"}");
+    j += F("\",\"role\":\"");
+    j += s.roleName;
+    j += F("\",\"node\":");
+    j += String(s.node);
+    j += F("}");
     return j;
 }

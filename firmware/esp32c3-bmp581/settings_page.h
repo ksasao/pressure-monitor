@@ -19,6 +19,8 @@ struct DeviceStatus {
     uint32_t    brownouts;      // ブラウンアウトによる再起動の累計
     uint8_t     modeNumber;     // 今の表示モードの番号 (1〜4)
     const char *modeName;       // 今の表示モードの名前
+    const char *roleName;       // 保存されている役割 (再起動すると有効)
+    int32_t     node;           // 装置の番号
 };
 
 // 設定ページ。現在の設定を埋め込む。saved = true なら「保存しました」を出す。

@@ -32,8 +32,12 @@
  *   SSID / パスワード : config.h の AP_SSID / AP_PASSWORD (既定はパスワードなし)
  *   アドレス           : http://192.168.4.1/
  * 設定ページの「保存して終了」、もう一度の長押し、または一定時間の無操作で、
- * 再起動して通常モードに戻ります。通常モードでは Wi-Fi を初期化しないので、
+ * 再起動して通常モードに戻ります。通常モードでは、役割が「単体」なら Wi-Fi を初期化しないので、
  * 無線は完全にオフです。
+ *
+ * --- 複数台の表示 (ESP-NOW) ---
+ * 設定ページで、役割を「送信」「ハブ」にすると、送信の装置の気圧のデータを、ハブが集めて、
+ * スマホのブラウザに表示します (link.h、hub.h)。
  *
  * --- ファイル構成 ---
  *   esp32c3-bmp581.ino  setup() と loop()。各モジュールをつなぐ
@@ -51,6 +55,9 @@
  *   power.*             省電力 (USB が接続されていないときの、ライトスリープ)
  *   settings_page.*     設定ページの HTML と、状況の JSON
  *   portal.*            設定モードの Wi-Fi / DNS / Web サーバ
+ *   link.*              複数台の表示。ESP-NOW の送信と、パケットの形式
+ *   hub.*               ハブ (受信したデータを、スマホのブラウザへ送る)
+ *   hub_page.*          ハブの表示ページ (HTML とスクリプト)
  *   led_types.h         FastLED の型を使うためのヘッダ
  */
 
@@ -69,6 +76,8 @@
 #include "logging.h"
 #include "portal.h"
 #include "power.h"
+#include "link.h"
+#include "hub.h"
 
 // 表示モード (modes.h): 0 = 標準, 1 = ドライブ, 2 = カスタム, 3 = 固定色。電源を切っても残る
 // 今のモードは g_set.mode が持つ (設定ページからも変えられるため、ここでは複製しない)
@@ -173,6 +182,10 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     if (modeIsSolid(currentMode())) displayClearTrail();
     else                     displaySetHead(color);
 
+    // 複数台の表示 (送信・ハブのとき)。固定色モードでは、その色を送る
+    linkPush(nowMs, s, hpf,
+             modeIsSolid(currentMode()) ? hsvToColor(g_set.hue, g_set.sat, g_set.val) : color);
+
     if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
 }
 
@@ -216,7 +229,13 @@ void setup()
 
     // 設定モードは、センサの有無にかかわらず Wi-Fi を起動する
     // (Wi-Fi が回路で動くかの確認が目的のため)
-    if (bootIsSettingsMode()) portalBegin();
+    // 通常モードでは、役割が送信・ハブのときだけ、無線を起動する (link.h)
+    if (bootIsSettingsMode()) {
+        portalBegin();
+    } else {
+        Serial.printf("# role: %s (node %ld)\n", linkRoleName((uint8_t)g_set.role), (long)g_set.node);
+        linkBegin();
+    }
 
     g_sensorReady = sensorBegin();
     if (g_sensorReady) {
@@ -259,6 +278,8 @@ void loop()
     // 設定モード: DNS・電池電圧の監視・タイムアウト。
     // センサが見つからない場合でも動かす
     if (bootIsSettingsMode()) portalService(millis());
+    hubService(millis());           // ハブのときだけ動く (受信したデータをスマホへ)
+    linkService(millis());          // 送信の装置のときだけ動く (ハブのチャンネルの探索)
 
     if (!g_sensorReady) {
         static uint32_t last = 0;

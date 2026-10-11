@@ -12,6 +12,7 @@
 #include "battery.h"
 #include "boot.h"
 #include "modes.h"
+#include "link.h"
 
 static AsyncWebServer s_server(80);
 static DNSServer      s_dns;
@@ -52,6 +53,8 @@ static void handleStatus(AsyncWebServerRequest *req)
     st.brownouts  = settingsBrownoutCount();
     st.modeNumber = (uint8_t)(g_set.mode + 1);
     st.modeName   = modeName((uint8_t)g_set.mode);
+    st.roleName   = linkRoleName((uint8_t)g_set.role);
+    st.node       = g_set.node;
     req->send(200, "application/json", buildStatusJson(st));
 }
 
@@ -73,13 +76,32 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "hue",   g_set.hue);
     postInt(req, "sat",   g_set.sat);
     postInt(req, "val",   g_set.val);
+    postInt(req, "role",  g_set.role);
+    postInt(req, "node",  g_set.node);
+
+    // ハブの接続先の Wi-Fi。パスワードは、空欄なら今のものを残す
+    if (req->hasParam("wssid", true)) {
+        String ssid = req->getParam("wssid", true)->value();
+        ssid.trim();
+        strlcpy(g_set.wifiSsid, ssid.c_str(), sizeof(g_set.wifiSsid));
+    }
+    if (req->hasParam("wpass", true)) {
+        const String pass = req->getParam("wpass", true)->value();
+        if (pass.length() > 0) strlcpy(g_set.wifiPass, pass.c_str(), sizeof(g_set.wifiPass));
+    }
+    if (req->hasParam("wpclr", true) && req->getParam("wpclr", true)->value() == "1") {
+        g_set.wifiPass[0] = '\0';
+    }
 
     settingsClamp();
     settingsSave();
-    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld\n",
+    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld"
+                  " role=%s node=%ld wifi=\"%s\"%s\n",
                   (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
                   (long)g_set.trailStepTicks, (long)g_set.brightness,
-                  (long)g_set.hue, (long)g_set.sat, (long)g_set.val);
+                  (long)g_set.hue, (long)g_set.sat, (long)g_set.val,
+                  linkRoleName((uint8_t)g_set.role), (long)g_set.node,
+                  g_set.wifiSsid, g_set.wifiPass[0] ? " (password set)" : "");
 
     bool exitAfter = req->hasParam("exit", true) &&
                      req->getParam("exit", true)->value() == "1";

@@ -16,6 +16,7 @@ static uint32_t s_lastWakeMs = 0;
 static bool     s_sleeping      = false;   // 直前のティックの待ちで、眠ったか
 static uint8_t  s_failures      = 0;       // ライトスリープに失敗した連続回数
 static bool     s_disabled      = false;   // 失敗が続いたので、無効にした
+static bool     s_keepAwake     = false;   // 無線を使っている (送信・ハブ)
 
 // 復帰の直後は、FreeRTOS のティックのフックが数回動くまで、isPlugged() が古い
 static const uint32_t SETTLE_AFTER_WAKE_MS = 10;
@@ -24,11 +25,17 @@ static bool canSleep(uint32_t nowMs)
 {
     if (!LIGHT_SLEEP_ENABLED || s_disabled) return false;
     if (bootIsSettingsMode())               return false;   // Wi-Fi が動いている
+    if (s_keepAwake)                        return false;   // ESP-NOW / ハブが動いている
     if (nowMs < LIGHT_SLEEP_BOOT_DELAY_MS)  return false;   // 起動の直後
     if ((nowMs - s_lastHostSeenMs) < USB_UNPLUGGED_HOLD_MS) return false;   // USB が見えている
     if ((nowMs % USB_PROBE_INTERVAL_MS) < USB_PROBE_WINDOW_MS) return false;   // 検出窓
     if (!displayIsDark())                   return false;   // LED が点灯している間は眠らない
     return true;
+}
+
+void powerKeepAwake()
+{
+    s_keepAwake = true;
 }
 
 void powerService(uint32_t nowMs)
