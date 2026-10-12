@@ -210,7 +210,7 @@ function info(){fetch('/info').then(function(r){return r.json();}).then(function
   +(j.mdns?' または '+link('http://'+j.mdns+'/'):''));}
  else if(j.net==='connecting'){s.push('Wi-Fi「'+esc(j.ssid)+'」に接続しています...');}
  if(j.ap_ssid)s.push('アクセスポイント '+esc(j.ap_ssid)+': '+link('http://'+j.ap_ip+'/'));
- s.push('グループ '+j.group+' / チャンネル '+j.channel);
+ s.push('グループ '+j.group+' / チャンネル '+j.channel+' / ファームウェア '+esc(j.fw||''));
  document.getElementById('net').innerHTML=s.join(' / ');
 }).catch(function(){});}
 setInterval(info,5000);info();

@@ -1,0 +1,13 @@
+{
+  "name": "pressure-monitor (esp32c3-bmp581)",
+  "chipFamily": "ESP32-C3",
+  "releases": [
+    {
+      "version": "2026-10-12",
+      "date": "2026-10-12",
+      "commit": "02d1b62-dirty",
+      "notes": "ブラウザから書き込めるようにした最初のリリースです。",
+      "path": "releases/2026-10-12/"
+    }
+  ]
+}

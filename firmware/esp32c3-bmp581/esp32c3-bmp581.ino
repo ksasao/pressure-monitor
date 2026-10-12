@@ -42,6 +42,7 @@
  * --- ファイル構成 ---
  *   esp32c3-bmp581.ino  setup() と loop()。各モジュールをつなぐ
  *   config.h            調整できる定数、ピン割り当て
+ *   version.h           ファームウェアのバージョン (リリース日。リリースのスクリプトが書き換える)
  *   settings.*          設定値 (設定モードで変更・保存できる値)
  *   boot.*              リセットの理由、通常モード / 設定モードの切り替え
  *   sensor.*            気圧センサ BMP581
@@ -65,6 +66,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "version.h"
 #include "settings.h"
 #include "boot.h"
 #include "sensor.h"
@@ -260,7 +262,7 @@ void setup()
     g_log.begin();
 
     Serial.println();
-    Serial.println(F("=== PressureMonitor bring-up (FastLED) ==="));
+    Serial.println(F("=== PressureMonitor " FIRMWARE_VERSION " ==="));
     Serial.printf("# reset reason: %s%s\n", bootResetReasonName(),
                   bootIsSettingsMode() ? " -> settings mode" : "");
 

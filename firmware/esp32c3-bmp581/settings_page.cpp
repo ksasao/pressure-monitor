@@ -3,6 +3,7 @@
 #include "config.h"
 #include "settings.h"
 #include "link.h"
+#include "version.h"
 
 // スライドバーと数値の入力欄を 1 組出す。
 // 値は、数値の入力欄 (name = id) がフォームで送られる。スライドバーは、ページのスクリプトが
@@ -100,7 +101,8 @@ function upd(){fetch('/status').then(function(r){return r.json();}).then(functio
  +'電池: '+(j.vbat_mv/1000).toFixed(3)+' V (最低 '+(j.vbat_min_mv/1000).toFixed(3)+' V)<br>'
  +'気圧: '+j.hpa.toFixed(2)+' hPa / 温度: '+j.temp_c.toFixed(1)+' ℃<br>'
  +'接続中の端末: '+j.stations+' 台 / 空きメモリ: '+j.heap+' B<br>'
- +'前回の再起動理由: '+j.reset+' / ブラウンアウト: '+j.brownouts+' 回';
+ +'前回の再起動理由: '+j.reset+' / ブラウンアウト: '+j.brownouts+' 回<br>'
+ +'ファームウェア: '+esc(j.fw);
  document.getElementById('st').innerHTML=s;mark(j.mode_no);}).catch(function(){});}
 function mark(n){var b=document.querySelectorAll('.mb button');
  for(var i=0;i<b.length;i++){b[i].className=(+b[i].dataset.m===n)?'on':'';}}
@@ -314,6 +316,7 @@ String buildStatusJson(const DeviceStatus &s)
     appendJsonEscaped(j, s.nodeName.c_str());
     j += F("\",\"group\":");
     j += String(g_set.group);
+    j += F(",\"fw\":\"" FIRMWARE_VERSION "\"");
     j += F("}");
     return j;
 }

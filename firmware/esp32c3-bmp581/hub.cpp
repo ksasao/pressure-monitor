@@ -13,6 +13,7 @@
 #include "link.h"
 #include "hub_page.h"
 #include "settings.h"
+#include "version.h"
 
 static AsyncWebServer s_server(80);
 static AsyncWebSocket s_ws("/ws");
@@ -129,7 +130,7 @@ static void handleInfo(AsyncWebServerRequest *req)
     if (apUp) j += WiFi.softAPIP().toString();
     j += F("\",\"group\":");
     j += String(g_set.group);
-    j += F(",\"channel\":");
+    j += F(",\"fw\":\"" FIRMWARE_VERSION "\",\"channel\":");
     j += String(currentChannel());
     j += F("}");
     req->send(200, "application/json", j);

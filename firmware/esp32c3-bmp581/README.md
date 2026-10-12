@@ -4,6 +4,8 @@ ESP32-C3 + BMP581 + WS2812B × 5 のファームウェア（Arduino スケッチ
 
 スケッチ: [`esp32c3-bmp581.ino`](esp32c3-bmp581.ino)（このフォルダを、Arduino IDE で開きます）
 
+ビルドせずに使う場合は、[書き込みツール](https://ksasao.github.io/pressure-monitor/esp32c3-bmp581/flasher/)から、ブラウザで書き込めます。リリースの作り方は [RELEASING.md](../../RELEASING.md) を見てください。ファームウェアのバージョン（リリース日）は [`version.h`](version.h) にあり、起動時のシリアル、設定ページ、ハブの画面に表示されます。
+
 ## ファイル構成
 
 機能ごとに、ファイルを分けています。`.h` が他のモジュールへの窓口（使い方の説明つき）で、`.cpp` が中身です。
@@ -12,6 +14,7 @@ ESP32-C3 + BMP581 + WS2812B × 5 のファームウェア（Arduino スケッチ
 |---|---|
 | [`esp32c3-bmp581.ino`](esp32c3-bmp581.ino) | `setup()` と `loop()`。各モジュールをつなぐ |
 | [`config.h`](config.h) | 調整できる定数（周期、CPU クロック、Wi-Fi の SSID など）と、ピン割り当て |
+| [`version.h`](version.h) | ファームウェアのバージョン（リリース日）。リリースのスクリプトが書き換える |
 | `settings.h` / `.cpp` | 設定値（設定モードで変更・保存できる値）と、既定値 `SETTINGS_DEFAULT` |
 | `boot.h` / `.cpp` | リセットの理由、通常モードと設定モードの切り替え（再起動） |
 | `sensor.h` / `.cpp` | 気圧センサ BMP581（初期化、読み取り） |

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pressure-monitor 書き込みツール</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="panel">
+    <section class="head">
+      <a class="back-link" href="../">&#8592; esp32c3-bmp581 のページへ</a>
+      <h1>pressure-monitor ファームウェア書き込みツール</h1>
+      <p class="sub">
+        USB で接続した基板（ESP32-C3 + BMP581）に、ブラウザからファームウェアを書き込みます。<br>
+        対応ブラウザ: パソコンの Chrome / Edge / Opera（Web Serial に対応している必要があります）
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>1. バージョンを選ぶ</h2>
+        <label class="field">
+          <span>バージョン（リリース日）</span>
+          <select id="release" disabled><option>読み込み中...</option></select>
+        </label>
+        <div id="notes" class="notes"></div>
+
+        <h2>2. 書き込む</h2>
+        <ol>
+          <li>基板を USB-C でパソコンに接続します</li>
+          <li>「接続」を押し、表示されたシリアルポート（「USB JTAG/serial debug unit」など）を選びます</li>
+          <li>「書き込み開始」を押し、完了するまで待ちます（1 分ほど）</li>
+          <li>完了すると、基板が自動で再起動します</li>
+        </ol>
+
+        <div class="controls">
+          <button id="connectBtn" type="button">接続</button>
+          <button id="flashBtn" type="button" disabled>書き込み開始</button>
+          <button id="disconnectBtn" class="secondary" type="button" disabled>切断</button>
+          <label class="check"><input id="eraseAll" type="checkbox">全消去（設定も初期値に戻す）</label>
+        </div>
+        <div class="progress"><div id="bar"></div></div>
+        <div id="status" class="status">ブラウザの対応を確認しています...</div>
+        <pre id="log" class="log">[ready] ログを表示します。</pre>
+      </article>
+
+      <aside class="card">
+        <h2>うまくいかないとき</h2>
+        <ul class="meta">
+          <li><strong>接続できない</strong>: Arduino IDE のシリアルモニタなど、ポートを使っているほかのアプリを閉じてください。</li>
+          <li><strong>それでも接続できない</strong>: 基板の <strong>BOOT</strong> ボタンを押したまま <strong>RESET</strong> ボタンを押して離し、BOOT ボタンを離してから（書き込みモード）、もう一度「接続」を押してください。</li>
+          <li><strong>書き込み後に動かない</strong>: RESET ボタンを押してください。</li>
+          <li><strong>USB ケーブル</strong>: 充電専用のケーブルでは接続できません。データ通信に対応したケーブルを使ってください。</li>
+        </ul>
+        <h2>設定について</h2>
+        <p class="meta">
+          通常は、明るさやモードなどの設定は、書き込み後も残ります。
+          「全消去」に印を付けると、設定も全て消えて、初期値に戻ります（動作がおかしいときに試してください）。
+        </p>
+        <h2>複数台の表示を使う場合</h2>
+        <p class="meta">
+          送信の装置とハブは、通信の形式が同じでないと、互いのデータを受け取れません。
+          全ての装置に、同じバージョンを書き込んでください。
+        </p>
+        <p class="meta">
+          このページは <a href="https://github.com/espressif/esptool-js" target="_blank" rel="noopener">esptool.js</a> を使っています。
+          ソースコード: <a href="https://github.com/ksasao/pressure-monitor" target="_blank" rel="noopener">ksasao/pressure-monitor</a>
+        </p>
+      </aside>
+    </section>
+  </main>
+
+  <script type="module" src="flasher.js"></script>
+</body>
+</html>

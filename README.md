@@ -31,14 +31,25 @@ pressure-monitor/
 ├── docs/                      GitHub Pages の資料 (使い方、回路図など)
 │   ├── index.md
 │   ├── esp32c3-bmp581/
+│   │   └── flasher/           ブラウザの書き込みツールと、リリースしたバイナリ
 │   └── assets/images/
+├── tools/                     リリースのスクリプト (RELEASING.md)
+├── RELEASING.md               ファームウェアのリリース手順
 ├── LICENSE
 └── README.md
 ```
 
 新しいマイコンやセンサの組み合わせを追加するときは、同じ名前（`<マイコン>-<センサ>`）で `firmware/`、`hardware/`、`docs/` の 3 か所にフォルダを作ります。
 
-## クイックスタート（esp32c3-bmp581）
+## ファームウェアを書き込む（esp32c3-bmp581）
+
+パソコンの Chrome / Edge から、ブラウザで書き込めます（Arduino IDE は不要です）。
+
+**[書き込みツール](https://ksasao.github.io/pressure-monitor/esp32c3-bmp581/flasher/)**
+
+バージョンは、リリース日で表されます。リリースの作り方は [RELEASING.md](RELEASING.md) を見てください。
+
+## クイックスタート（Arduino IDE でビルドする場合）
 
 1. Arduino IDE 2.x に、ESP32 のボードパッケージ（Espressif Systems 製）を入れる
 2. ライブラリマネージャから **SparkFun BMP581 Arduino Library**、**FastLED**（3.7.0 以降）、**ESP Async WebServer**、**Async TCP**（後ろの 2 つは ESP32Async 製）を入れる
