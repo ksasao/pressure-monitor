@@ -47,15 +47,32 @@ uint8_t colorPeak(const CRGB &c)
 
 CRGB hsvToColor(int32_t hueDeg, int32_t satPct, int32_t valPct)
 {
+    if (valPct < 0) valPct = 0;
+    if (valPct > 100) valPct = 100;
+    return hsvToColorFine(hueDeg, satPct, valPct * 10);
+}
+
+int32_t deltaLevel(int32_t delta, int32_t limit, int32_t range)
+{
+    const int32_t a = (delta < 0) ? -delta : delta;
+    int32_t level;
+    if (a < limit)                         level = 0;
+    else if (range <= limit || a >= range) level = 1000;
+    else level = (int32_t)(((int64_t)(a - limit) * 1000) / (range - limit));
+    return (delta < 0) ? -level : level;
+}
+
+CRGB hsvToColorFine(int32_t hueDeg, int32_t satPct, int32_t valPermille)
+{
     if (hueDeg < 0) hueDeg = 0;
     if (hueDeg > 359) hueDeg = 359;
     if (satPct < 0) satPct = 0;
     if (satPct > 100) satPct = 100;
-    if (valPct < 0) valPct = 0;
-    if (valPct > 100) valPct = 100;
+    if (valPermille < 0) valPermille = 0;
+    if (valPermille > 1000) valPermille = 1000;
 
     // 0〜255 に直す (四捨五入)
-    const int32_t v = (valPct * 255 + 50) / 100;
+    const int32_t v = (valPermille * 255 + 500) / 1000;
     const int32_t s = (satPct * 255 + 50) / 100;
 
     const int32_t sector = hueDeg / 60;                 // 0..5

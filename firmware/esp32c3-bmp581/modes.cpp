@@ -32,6 +32,7 @@ SenseParams modeSense(uint8_t mode)
             return p;
         }
         default:
+            // 標準。固定色モードで、気圧の変化を明度に反映するときも、この感度を使う
             return SENSE_STANDARD;
     }
 }

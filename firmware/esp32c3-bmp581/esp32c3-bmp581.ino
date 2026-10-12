@@ -55,6 +55,7 @@
  *   power.*             省電力 (USB が接続されていないときの、ライトスリープ)
  *   settings_page.*     設定ページの HTML と、状況の JSON
  *   portal.*            設定モードの Wi-Fi / DNS / Web サーバ
+ *   monitor_page.*      設定モードで最初に開くページ (気圧の絶対値、変化量、グラフ)
  *   link.*              複数台の表示。ESP-NOW の送信と、パケットの形式
  *   hub.*               ハブ (受信したデータを、スマホのブラウザへ送る)
  *   hub_page.*          ハブの表示ページ (HTML とスクリプト)
@@ -86,6 +87,9 @@ static bool     g_modeDirty = false;       // モードを切り替えたが、�
 
 // BOOT ボタンを押したときの、モード番号の表示時間 [ms]
 static const uint32_t MODE_NUMBER_MS = 2000;
+
+// 固定色モードの、フィルタの出力 (-1000〜1000。標準モードの感度)。明度に反映する
+static int32_t  g_solidLevel   = 0;
 
 static bool     g_sensorReady  = false;
 static uint8_t  g_shiftCount   = 0;
@@ -170,6 +174,16 @@ static void handleButton()
     }
 }
 
+// 固定色モードの色。設定した明度に、フィルタの出力 x 反映量 (valMod) を足す。
+// 気圧が上がると (+) 明るく、下がると (-) 暗くなる。結果は 0〜100 % に収める
+// (明るさの最大値 brightness は掛けない)
+//   明度 [0.1 %] = val x 10 + valMod x (フィルタの出力 -1000〜1000) / 100
+static CRGB solidColor()
+{
+    const int32_t v = g_set.val * 10 + (g_set.valMod * g_solidLevel) / 100;
+    return hsvToColorFine(g_set.hue, g_set.sat, v);     // 0〜1000 に収める
+}
+
 // 気圧の CSV を 1 行出す (LOG_EVERY_N ティックに 1 回)
 //   millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value,battery_mV
 // battery_mV は最後に測った電池電圧 (BATTERY_INTERVAL_MS ごとに測る)。毎行、その値を出す
@@ -206,14 +220,21 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     int32_t hpf   = g_pressureHpf.update(s.raw, p.hpfShift);
     CRGB    color = deltaToColor(hpf, p.deltaLimit, p.deltaRange);
 
-    // 平滑化せずそのまま反映する。ここが応答性の要です。
-    // 固定色モードでは使わない。履歴を消しておく (残ると、眠れなくなる)
-    if (modeIsSolid(currentMode())) displayClearTrail();
-    else                     displaySetHead(color);
+    // 固定色モードでは、フィルタの出力を明度に反映した色にする (標準モードの感度。
+    // modeSense の既定)。履歴は、標準モードと同じく、5 個の LED に流れる
+    if (modeIsSolid(currentMode())) {
+        g_solidLevel = deltaLevel(hpf, p.deltaLimit, p.deltaRange);
+        color = solidColor();
+    }
 
-    // 複数台の表示 (送信・ハブのとき)。固定色モードでは、その色を送る
-    linkPush(nowMs, s, hpf,
-             modeIsSolid(currentMode()) ? hsvToColor(g_set.hue, g_set.sat, g_set.val) : color);
+    // 平滑化せずそのまま反映する。ここが応答性の要です。
+    displaySetHead(color);
+
+    // 複数台の表示 (送信・ハブのとき)。固定色モードでは、表示している色を送る
+    linkPush(nowMs, s, hpf, color);
+
+    // 設定モードの表示ページへ (設定モードでなければ何もしない)
+    portalPushSample(nowMs, s.raw, hpf, color.r, color.g, color.b);
 
     if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
 }
@@ -350,11 +371,8 @@ void loop()
         if (bootIsSettingsMode()) {
             displaySetStatus(true, portalHasClient() ? CRGB(0, 60, 0) : CRGB(0, 40, 40));
         }
-        if (modeIsSolid(currentMode())) {
-            displayRenderSolid(hsvToColor(g_set.hue, g_set.sat, g_set.val));
-        } else {
-            displayRenderTrail((uint8_t)g_set.brightness);
-        }
+        // 固定色モードには、明るさの最大値を掛けない (色の明度で決める)
+        displayRenderTrail(modeIsSolid(currentMode()) ? 255 : (uint8_t)g_set.brightness);
     }
     g_perf.render(micros() - tC);
 

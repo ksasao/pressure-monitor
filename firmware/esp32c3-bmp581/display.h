@@ -37,16 +37,13 @@ void displayNoteWake();
 void displaySetHead(const CRGB &c);        // LED1 の色 (ライブ値) を更新する
 void displayTrailShift();                  // 履歴を 1 段後ろに送り、先頭に LED1 の色を入れる
 
-// 30Hz で呼ぶ。モード番号の表示中は、どちらも、番号の表示を優先する。
+// 30Hz で呼ぶ。モード番号の表示中は、番号の表示を優先する。
 void displayRenderTrail(uint8_t brightness);   // 履歴の表示。brightness = 明るさの最大値 (0〜255)
-void displayRenderSolid(const CRGB &c);        // 全 LED を同じ色にする (明るさの設定は掛けない)
 
 // モード番号の表示。number の数だけ、先頭の LED を、durationMs の間、青で点灯する
 void displayShowModeNumber(uint8_t number, uint32_t durationMs);
 bool displayModeNumberActive();                // 表示中か
 
-// LED1 の色と履歴を消す。固定色モードで、気圧の履歴が残って、眠れなくなるのを防ぐ
-void displayClearTrail();
 
 
 // 状態表示 (最後の LED を、状態の色で上書きする)。設定モードで使う

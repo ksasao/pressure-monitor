@@ -28,3 +28,7 @@ bool portalHasClient();                   // スマホが接続しているか
 
 // 設定ページの /status に出す、最新のセンサ値を渡す
 void portalSetSensor(float hPa, float tempC);
+
+// 表示ページ (monitor_page.h) へ送るサンプルを渡す (毎ティック)。設定モードでなければ何もしない。
+// r, g, b は LED1 の色
+void portalPushSample(uint32_t ms, int32_t raw, int32_t hpf, uint8_t r, uint8_t g, uint8_t b);

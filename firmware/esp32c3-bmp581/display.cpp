@@ -213,16 +213,6 @@ void displayRenderTrail(uint8_t brightness)
     showFrame(brightness);
 }
 
-// 全 LED を同じ色にする。明るさの設定は掛けない (色の明度で決める)
-void displayRenderSolid(const CRGB &c)
-{
-    if (overlayActive()) { renderOverlay(); return; }
-
-    fill_solid(leds, NUM_LEDS, c);
-    applyStatus();
-    showFrame(255);
-}
-
 void displayShowModeNumber(uint8_t number, uint32_t durationMs)
 {
     s_overlayCount   = number > NUM_LEDS ? NUM_LEDS : number;
@@ -235,11 +225,6 @@ bool displayModeNumberActive()
     return overlayActive();
 }
 
-void displayClearTrail()
-{
-    s_head = CRGB::Black;
-    for (uint8_t i = 0; i < NUM_LEDS; i++) s_trail[i] = CRGB::Black;
-}
 
 void displaySetStatus(bool enabled, const CRGB &c)
 {

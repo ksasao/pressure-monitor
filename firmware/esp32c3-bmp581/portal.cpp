@@ -8,6 +8,7 @@
 #include "config.h"
 #include "settings.h"
 #include "settings_page.h"
+#include "monitor_page.h"
 #include "display.h"
 #include "battery.h"
 #include "boot.h"
@@ -30,9 +31,54 @@ static uint32_t s_lastVbatMs = 0;
 static float    s_hPa   = 0.0f;
 static float    s_tempC = 0.0f;
 
+static bool     s_started = false;         // portalBegin() を呼んだ (設定モード)
+
+// 表示ページ (monitor_page.h) へ送るサンプル。約 100ms ごとに、まとめて WebSocket で送る
+static const uint8_t  PUSH_MAX_SAMPLES = 16;
+static const uint32_t PUSH_INTERVAL_MS = 100;
+static uint8_t  s_push[8 + 16 * PUSH_MAX_SAMPLES];
+static uint8_t  s_pushCount  = 0;
+static uint32_t s_lastPushMs = 0;
+
+static AsyncWebSocket s_ws("/ws");
+
+static void put32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+// たまったサンプルを、1 つのフレームにして、全ての接続先へ送る (形式は monitor_page.h)
+static void flushSamples(uint32_t nowMs)
+{
+    s_lastPushMs = nowMs;
+    if (s_pushCount == 0) return;
+    const int16_t t100 = (int16_t)lroundf(s_tempC * 100.0f);
+    s_push[0] = 'M';
+    s_push[1] = 1;
+    s_push[2] = s_pushCount;
+    s_push[3] = (uint8_t)g_set.mode;
+    s_push[4] = (uint8_t)t100;
+    s_push[5] = (uint8_t)((uint16_t)t100 >> 8);
+    s_push[6] = 0;
+    s_push[7] = 0;
+    // 送信が詰まっている接続先があるときは、このフレームを捨てる (メモリを使い切らないため)
+    if (s_ws.count() > 0 && s_ws.availableForWriteAll()) {
+        s_ws.binaryAll(s_push, 8 + 16 * s_pushCount);
+    }
+    s_pushCount = 0;
+}
+
 // ---------------------------------------------------------------- handlers
 
+// 最初に開くページ: 気圧の表示 (monitor_page.h)
 static void handleRoot(AsyncWebServerRequest *req)
+{
+    s_lastActivityMs = millis();
+    req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML, strlen(MONITOR_PAGE_HTML));
+}
+
+// 設定のページ (表示ページの「設定」ボタンから開く)
+static void handleSettings(AsyncWebServerRequest *req)
 {
     s_lastActivityMs = millis();
     req->send(200, "text/html; charset=utf-8", buildSettingsPage(req->hasParam("saved")));
@@ -76,6 +122,7 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "hue",   g_set.hue);
     postInt(req, "sat",   g_set.sat);
     postInt(req, "val",   g_set.val);
+    postInt(req, "vmod",  g_set.valMod);
     postInt(req, "role",  g_set.role);
     postInt(req, "group", g_set.group);
     postInt(req, "hubch", g_set.hubChannel);
@@ -104,11 +151,11 @@ static void handleSave(AsyncWebServerRequest *req)
 
     settingsClamp();
     settingsSave();
-    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld"
+    Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld vmod=%ld"
                   " role=%s group=%ld hubch=%ld name=%s wifi=\"%s\"%s\n",
                   (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
                   (long)g_set.trailStepTicks, (long)g_set.brightness,
-                  (long)g_set.hue, (long)g_set.sat, (long)g_set.val,
+                  (long)g_set.hue, (long)g_set.sat, (long)g_set.val, (long)g_set.valMod,
                   linkRoleName((uint8_t)g_set.role), (long)g_set.group, (long)g_set.hubChannel,
                   settingsNodeName().c_str(),
                   g_set.wifiSsid, g_set.wifiPass[0] ? " (password set)" : "");
@@ -127,7 +174,7 @@ static void handleSave(AsyncWebServerRequest *req)
         return;
     }
 
-    req->redirect("/?saved=1");
+    req->redirect("/settings?saved=1");
 }
 
 // ---- 設定ページの操作中の、LED へのリアルタイムの反映 (保存はしない)
@@ -137,8 +184,6 @@ static void handleSave(AsyncWebServerRequest *req)
 // 値は、WebSocket (/ws) で受け取る。スライドバーを動かしている間は、1 秒に 30 回ほど届くため、
 // HTTP の POST (/live) のように、応答を待つ往復の時間がかからない。
 // WebSocket が使えないときは、HTTP の POST (/live) で受け取る (ページのスクリプトが切り替える)
-
-static AsyncWebSocket s_ws("/ws");
 
 // 名前と値を 1 組、設定に反映する。ページの表示モードの番号は 1〜4、内部は 0〜3
 static void setLiveValue(const String &key, int32_t v)
@@ -151,6 +196,7 @@ static void setLiveValue(const String &key, int32_t v)
     else if (key == "hue")    g_set.hue            = v;
     else if (key == "sat")    g_set.sat            = v;
     else if (key == "val")    g_set.val            = v;
+    else if (key == "vmod")   g_set.valMod         = v;
     else if (key == "mode")   g_set.mode           = v - 1;
 }
 
@@ -217,7 +263,7 @@ static void handleReset(AsyncWebServerRequest *req)
     settingsReset();
     Serial.println(F("# settings reset to default"));
 
-    req->redirect("/?saved=1");
+    req->redirect("/settings?saved=1");
 }
 
 // 登録のないアドレスへのアクセス (キャプティブポータル。説明は portal.h)
@@ -226,7 +272,8 @@ static void handleNotFound(AsyncWebServerRequest *req)
     Serial.printf("# http (portal) %s%s\n", req->host().c_str(), req->url().c_str());
 
     if (PORTAL_DIRECT_HTML) {
-        req->send(200, "text/html; charset=utf-8", buildSettingsPage(false));
+        req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML,
+                  strlen(MONITOR_PAGE_HTML));
     } else {
         req->redirect(s_portalUrl);
     }
@@ -236,6 +283,7 @@ static void handleNotFound(AsyncWebServerRequest *req)
 
 void portalBegin()
 {
+    s_started = true;
     WiFi.persistent(false);             // Wi-Fi の設定をフラッシュに書かない
     WiFi.mode(WIFI_AP);
 
@@ -249,6 +297,7 @@ void portalBegin()
     s_dns.start(53, "*", ip);           // 全ての名前を基板 (192.168.4.1) に向ける
 
     s_server.on("/",       HTTP_GET,  handleRoot);
+    s_server.on("/settings", HTTP_GET, handleSettings);
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);
     s_server.on("/live",   HTTP_POST, handleLive);
@@ -279,6 +328,13 @@ void portalService(uint32_t nowMs)
     s_dns.processNextRequest();
     s_ws.cleanupClients();              // 切れた WebSocket の接続を片づける
 
+    // 表示ページへ、たまったサンプルを送る
+    if (s_pushCount > 0 && nowMs - s_lastPushMs >= PUSH_INTERVAL_MS) flushSamples(nowMs);
+
+    // ページ (表示または設定) を開いている間は、無操作とみなさない。
+    // ページを閉じる (スマホの画面が消える) と、WebSocket が切れて、時間を数え始める
+    if (s_ws.count() > 0) s_lastActivityMs = nowMs;
+
     // 電池電圧の監視 (1 秒ごと)。最低値を記録して、Wi-Fi 送信時の電圧の落ち込みを見る
     if (nowMs - s_lastVbatMs >= 1000) {
         s_lastVbatMs = nowMs;
@@ -293,7 +349,7 @@ void portalService(uint32_t nowMs)
         bootRebootInto(false);
     }
 
-    // 無操作のタイムアウト
+    // 無操作のタイムアウト (ページを閉じてから SETTINGS_IDLE_TIMEOUT_MS)
     // 引き算は符号付きで行う。受信タスクが、nowMs を取ったあとに時刻を更新すると、
     // nowMs より新しくなる。符号なしだと、巨大な値になって、誤ってタイムアウトしてしまう
     const int32_t idleMs = (int32_t)(nowMs - s_lastActivityMs);
@@ -306,6 +362,20 @@ void portalService(uint32_t nowMs)
 bool portalHasClient()
 {
     return WiFi.softAPgetStationNum() > 0;
+}
+
+void portalPushSample(uint32_t ms, int32_t raw, int32_t hpf, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_started) return;
+    if (s_ws.count() == 0) { s_pushCount = 0; return; }     // 見ている人がいなければ溜めない
+    if (s_pushCount >= PUSH_MAX_SAMPLES) flushSamples(millis());
+
+    uint8_t *p = s_push + 8 + 16 * s_pushCount;
+    put32(p, ms);
+    put32(p + 4, (uint32_t)raw);
+    put32(p + 8, (uint32_t)hpf);
+    p[12] = r; p[13] = g; p[14] = b; p[15] = 0;
+    s_pushCount++;
 }
 
 void portalSetSensor(float hPa, float tempC)

@@ -86,6 +86,7 @@ button{font-size:1.1em;padding:12px 16px;margin:16px 8px 0 0}
 .mb button.on{background:#36c;color:#fff;border-color:#36c}
 .hue{background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
 </style></head><body>
+<p style="margin:0 0 8px"><a href="/">← 気圧の表示に戻る</a></p>
 <h1>pressure-monitor 設定</h1>
 )HTML");
 
@@ -135,11 +136,16 @@ setInterval(upd,1000);upd();
     addField(h, "trail", "履歴を流す間隔 (フレーム数)", 1, 60, g_set.trailStepTicks,
              "1 なら毎フレーム。大きくすると LED2〜5 に長い時間の履歴が流れます");
 
-    h += F("<h2>4 固定色</h2><small>全ての LED が、同じ色で点灯します。明度を 0 にすると消灯します。</small>");
+    h += F("<h2>4 固定色</h2><small>全ての LED が、同じ色で点灯します。明度を 0 にすると消灯します。気圧の変化を、明度に反映することもできます。</small>");
 
     addField(h, "hue", "色相 (0〜359 度)", 0, 359, g_set.hue, "0 赤、120 緑、240 青", false, "hue");
     addField(h, "sat", "彩度 (0〜100 %)", 0, 100, g_set.sat, "0 で白、100 で鮮やかな色");
     addField(h, "val", "明度 (0〜100 %)", 0, 100, g_set.val, "0 で消灯。電池の持ちには、小さい値が有利です");
+    addField(h, "vmod", "気圧の変化を明度に反映する量 (0〜100 %)", 0, 100, g_set.valMod,
+             "0 で反映しない。フィルタの出力 (1 標準と同じ感度。0.78 Pa から反映し、6.25 Pa で ±1) を掛けて、"
+             "明度に足します。気圧が上がると明るく、下がると暗くなります。"
+             "結果は 0〜100 % に収めます。変化は、1 標準と同じく、5 個の LED に履歴として流れます。"
+             "例: 明度 50、反映量 50 なら、静かなときは 50 %、上がると最大 100 %、下がると最小 0 %");
 
     // 複数台の表示。リアルタイムには反映せず、保存して再起動すると有効になる
     h += F("<h2>複数台の表示 (ESP-NOW)</h2>"
@@ -238,7 +244,7 @@ setInterval(upd,1000);upd();
 </form>
 <form method="POST" action="/reset"><button type="submit">初期値に戻す</button></form>
 <script>
-var ids=['bright','limit','range','hpf','trail','hue','sat','val'];
+var ids=['bright','limit','range','hpf','trail','hue','sat','val','vmod'];
 var wsx=null,timer=null,last=0,extra='',busy=false,again=false,body='';
 function openWs(){try{wsx=new WebSocket('ws://'+location.host+'/ws');
  wsx.onclose=function(){wsx=null;setTimeout(openWs,1000);};}catch(e){wsx=null;}}
@@ -271,7 +277,7 @@ window.addEventListener('load',function(){var a=document.activeElement;
 </script>
 )HTML");
 
-    h += F("<p><small>操作がないまま ");
+    h += F("<p><small>ページを閉じて (スマホの画面が消えて) から ");
     h += String(SETTINGS_IDLE_TIMEOUT_MS / 60000UL);
     h += F(" 分たつと、自動で終了します。基板の BOOT ボタンを長押しして終了することもできます。</small></p>"
            "</body></html>");

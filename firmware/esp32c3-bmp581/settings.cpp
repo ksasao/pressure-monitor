@@ -7,7 +7,7 @@
 #include "config.h"
 #include "link.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
+const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -32,6 +32,7 @@ void settingsClamp()
     g_set.hue            = clampI(g_set.hue, 0, 359);
     g_set.sat            = clampI(g_set.sat, 0, 100);
     g_set.val            = clampI(g_set.val, 0, 100);
+    g_set.valMod         = clampI(g_set.valMod, 0, 100);
     g_set.role           = clampI(g_set.role, 0, LINK_ROLE_COUNT - 1);
     g_set.group          = clampI(g_set.group, 1, 255);
     g_set.hubChannel     = clampI(g_set.hubChannel, 1, 13);
@@ -50,6 +51,7 @@ void settingsLoad()
     g_set.hue            = p.getInt("hue",    SETTINGS_DEFAULT.hue);
     g_set.sat            = p.getInt("sat",    SETTINGS_DEFAULT.sat);
     g_set.val            = p.getInt("val",    SETTINGS_DEFAULT.val);
+    g_set.valMod         = p.getInt("vmod",   SETTINGS_DEFAULT.valMod);
     g_set.role           = p.getInt("role",   SETTINGS_DEFAULT.role);
     g_set.group          = p.getInt("group",  SETTINGS_DEFAULT.group);
     g_set.hubChannel     = p.getInt("hubch",  SETTINGS_DEFAULT.hubChannel);
@@ -73,6 +75,7 @@ void settingsSave()
     p.putInt("hue",   g_set.hue);
     p.putInt("sat",   g_set.sat);
     p.putInt("val",   g_set.val);
+    p.putInt("vmod",  g_set.valMod);
     p.putInt("role",  g_set.role);
     p.putInt("group", g_set.group);
     p.putInt("hubch", g_set.hubChannel);
