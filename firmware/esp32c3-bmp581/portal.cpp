@@ -54,7 +54,7 @@ static void handleStatus(AsyncWebServerRequest *req)
     st.modeNumber = (uint8_t)(g_set.mode + 1);
     st.modeName   = modeName((uint8_t)g_set.mode);
     st.roleName   = linkRoleName((uint8_t)g_set.role);
-    st.node       = g_set.node;
+    st.nodeName   = settingsNodeName();
     req->send(200, "application/json", buildStatusJson(st));
 }
 
@@ -77,7 +77,16 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "sat",   g_set.sat);
     postInt(req, "val",   g_set.val);
     postInt(req, "role",  g_set.role);
-    postInt(req, "node",  g_set.node);
+    postInt(req, "group", g_set.group);
+    postInt(req, "hubch", g_set.hubChannel);
+
+    // 装置の名前。空欄なら、初期値 (ps-XXXXXX) を使う
+    if (req->hasParam("nname", true)) {
+        String name = req->getParam("nname", true)->value();
+        name.trim();
+        if (name == settingsDefaultNodeName()) name = "";   // 初期値と同じなら、保存しない
+        settingsCopyName(g_set.nodeName, name.c_str(), NODE_NAME_MAX);
+    }
 
     // ハブの接続先の Wi-Fi。パスワードは、空欄なら今のものを残す
     if (req->hasParam("wssid", true)) {
@@ -96,11 +105,12 @@ static void handleSave(AsyncWebServerRequest *req)
     settingsClamp();
     settingsSave();
     Serial.printf("# settings saved: limit=%ld range=%ld hpf=%ld trail=%ld bright=%ld hue=%ld sat=%ld val=%ld"
-                  " role=%s node=%ld wifi=\"%s\"%s\n",
+                  " role=%s group=%ld hubch=%ld name=%s wifi=\"%s\"%s\n",
                   (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
                   (long)g_set.trailStepTicks, (long)g_set.brightness,
                   (long)g_set.hue, (long)g_set.sat, (long)g_set.val,
-                  linkRoleName((uint8_t)g_set.role), (long)g_set.node,
+                  linkRoleName((uint8_t)g_set.role), (long)g_set.group, (long)g_set.hubChannel,
+                  settingsNodeName().c_str(),
                   g_set.wifiSsid, g_set.wifiPass[0] ? " (password set)" : "");
 
     bool exitAfter = req->hasParam("exit", true) &&

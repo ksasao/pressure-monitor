@@ -54,6 +54,7 @@ static void onSenderRecv(const esp_now_recv_info_t *, const uint8_t *data, int l
 {
     if (len < (int)sizeof(LinkBeacon)) return;
     if (data[0] != 'P' || data[1] != 'B' || data[2] != LINK_VERSION) return;
+    if (data[8] != (uint8_t)g_set.group) return;      // 別のグループのハブ
     const uint8_t ch = data[3];
     if (ch < 1 || ch > MAX_CHANNEL) return;
     s_beaconChannel = ch;
@@ -88,14 +89,18 @@ static bool beginSender()
 
     setChannel(LINK_CHANNEL);           // まずは、ハブが自分でアクセスポイントになるときのチャンネル
     s_dwellStartMs = millis();
-    Serial.printf("# link: sender, node %ld, MAC %s, searching hub from channel %u\n",
-                  (long)g_set.node, WiFi.macAddress().c_str(), LINK_CHANNEL);
+    Serial.printf("# link: sender, name %s, group %ld, MAC %s, searching hub from channel %u\n",
+                  settingsNodeName().c_str(), (long)g_set.group, WiFi.macAddress().c_str(), LINK_CHANNEL);
     return true;
 }
 
 void linkBegin()
 {
     s_role = (uint8_t)g_set.role;
+    // 名前は、起動時に 1 回だけ入れる (毎回のパケットに同じものを載せる)
+    memset(s_pkt.name, 0, sizeof(s_pkt.name));
+    const String name = settingsNodeName();
+    memcpy(s_pkt.name, name.c_str(), min((size_t)name.length(), sizeof(s_pkt.name)));
     if (s_role == LINK_ROLE_SENDER) {
         s_ready = beginSender();
     } else if (s_role == LINK_ROLE_HUB) {
@@ -144,7 +149,7 @@ static void sendPacket()
     s_pkt.magic[0]  = 'P';
     s_pkt.magic[1]  = 'M';
     s_pkt.version   = LINK_VERSION;
-    s_pkt.node      = (uint8_t)g_set.node;
+    s_pkt.group     = (uint8_t)g_set.group;
     s_pkt.mode      = (uint8_t)g_set.mode;
     s_pkt.count     = s_count;
     s_pkt.seq       = s_seq++;

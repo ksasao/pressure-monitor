@@ -59,7 +59,8 @@ static uint32_t s_lastStatMs = 0;
 static bool validPacket(const uint8_t *data, int len)
 {
     return len >= (int)LINK_HEADER_BYTES && len <= (int)sizeof(LinkPacket) &&
-           data[0] == 'P' && data[1] == 'M' && data[2] == LINK_VERSION;
+           data[0] == 'P' && data[1] == 'M' && data[2] == LINK_VERSION &&
+           data[3] == (uint8_t)g_set.group;             // 別のグループの送信の装置は無視する
 }
 
 static void enqueue(const uint8_t *mac, int8_t rssi, const uint8_t *data, size_t len)
@@ -126,7 +127,9 @@ static void handleInfo(AsyncWebServerRequest *req)
     if (apUp) j += HUB_SSID;
     j += F("\",\"ap_ip\":\"");
     if (apUp) j += WiFi.softAPIP().toString();
-    j += F("\",\"channel\":");
+    j += F("\",\"group\":");
+    j += String(g_set.group);
+    j += F(",\"channel\":");
     j += String(currentChannel());
     j += F("}");
     req->send(200, "application/json", j);
@@ -146,12 +149,13 @@ static bool startOwnAp()
     WiFi.disconnect();
     // ESP-NOW の送信 (ビーコン) は、ステーションのインターフェースから出すので、両方を起動する
     WiFi.mode(WIFI_AP_STA);
-    bool ok = WiFi.softAP(HUB_SSID, nullptr, LINK_CHANNEL, 0, HUB_MAX_CLIENTS);
+    bool ok = WiFi.softAP(HUB_SSID, nullptr, (int)g_set.hubChannel, 0, HUB_MAX_CLIENTS);
     WiFi.setTxPower(AP_TX_POWER);
     esp_wifi_get_mac(WIFI_IF_AP, s_ownMac);
     s_net = NET_OWN_AP;
 
-    Serial.printf("# hub: Wi-Fi AP %s, channel %u\n", ok ? "started" : "FAILED", LINK_CHANNEL);
+    Serial.printf("# hub: Wi-Fi AP %s, channel %ld, group %ld\n", ok ? "started" : "FAILED",
+                  (long)g_set.hubChannel, (long)g_set.group);
     Serial.printf("#   SSID : %s (open, no password)\n", HUB_SSID);
     Serial.printf("#   URL  : http://%s/\n", WiFi.softAPIP().toString().c_str());
     Serial.printf("#   QR (Wi-Fi): WIFI:T:nopass;S:%s;;\n", HUB_SSID);
@@ -166,7 +170,7 @@ static void startStation()
 {
     if (HUB_KEEP_AP_WITH_STA) {
         WiFi.mode(WIFI_AP_STA);
-        WiFi.softAP(HUB_SSID, nullptr, LINK_CHANNEL, 0, HUB_MAX_CLIENTS);
+        WiFi.softAP(HUB_SSID, nullptr, (int)g_set.hubChannel, 0, HUB_MAX_CLIENTS);
     } else {
         WiFi.mode(WIFI_STA);
     }
@@ -267,6 +271,8 @@ static void serviceBeacon(uint32_t nowMs)
     b.version  = LINK_VERSION;
     b.channel  = currentChannel();
     b.hubMs    = nowMs;
+    b.group    = (uint8_t)g_set.group;
+    memset(b.reserved, 0, sizeof(b.reserved));
     esp_now_send(LINK_BROADCAST_ADDR, (const uint8_t *)&b, sizeof(b));
 }
 

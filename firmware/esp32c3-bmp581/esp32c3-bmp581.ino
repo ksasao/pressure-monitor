@@ -98,7 +98,7 @@ static uint32_t g_lastBatMs = 0;           // 最後に電池電圧を出力し�
 // Qwiic に別のセンサを足すときは、センサごとに HighPassFilter を作り、
 // 同じ SerialLog に、そのセンサの CSV の行を書きます
 static HighPassFilter g_pressureHpf;                    // 気圧のハイパスフィルタ
-static Button         g_bootButton(PIN_BOOT, LONG_PRESS_MS);
+static Button         g_bootButton(PIN_BOOT, LONG_PRESS_MS, FACTORY_RESET_PRESS_MS);
 static SerialLog      g_log;
 static PerfStats      g_perf;
 
@@ -106,11 +106,36 @@ static PerfStats      g_perf;
 //   短押し : 今のモードの番号を、番号の数だけ LED を青で点灯して知らせる (2 秒間)。
 //            その 2 秒の間に、続けて押すと、次のモードに切り替わる (4 の次は 1)
 //   長押し : 設定モード (Wi-Fi) と通常モードを切り替え
+//   20 秒押し続ける : 全ての LED を赤で 1 秒間点滅したあと、設定を全て初期値に戻して、再起動
 //
 // 切り替えは再起動で行う。ボタンを押したまま再起動すると、IO9 が Low のまま
 // リセットされて、書き込みモード (ダウンロードモード) に入ってしまうため、
 // 必ず離してから再起動する。
 // 長押しが成立した (1.5 秒たった) ときは、LED を水色にして合図する
+// 設定を全て初期値に戻して、再起動する (BOOT ボタンを 20 秒押し続けたとき)
+static void factoryReset()
+{
+    Serial.println(F("# BOOT held 20 s: factory reset"));
+
+    // 全ての LED を赤で点滅 (250ms ごとに点灯と消灯)
+    const uint32_t startMs = millis();
+    bool on = false;
+    while (millis() - startMs < FACTORY_RESET_BLINK_MS) {
+        on = !on;
+        displayFill(on ? CRGB(ERROR_VALUE, 0, 0) : CRGB::Black);
+        delay(250);
+    }
+    displayFill(CRGB::Black);
+
+    settingsFactoryReset();
+    Serial.println(F("# all settings reset to default"));
+
+    // ボタンを押したまま再起動すると、書き込みモードに入ってしまうので、離されるまで待つ
+    while (g_bootButton.isDown()) delay(10);
+    delay(50);                          // チャタリングが収まるまで
+    bootRebootInto(false);
+}
+
 static void handleButton()
 {
     switch (g_bootButton.poll()) {
@@ -118,6 +143,10 @@ static void handleButton()
             g_holdFeedback = true;              // 描画を止めて、水色のままにする
             Serial.println(F("# BOOT long press detected"));
             displayFill(CRGB(0, 50, 50));
+            break;
+
+        case BTN_VERY_LONG_REACHED:
+            factoryReset();             // 戻らない (再起動する)
             break;
 
         case BTN_LONG_RELEASED:
@@ -233,7 +262,8 @@ void setup()
     if (bootIsSettingsMode()) {
         portalBegin();
     } else {
-        Serial.printf("# role: %s (node %ld)\n", linkRoleName((uint8_t)g_set.role), (long)g_set.node);
+        Serial.printf("# role: %s (name %s, group %ld)\n", linkRoleName((uint8_t)g_set.role),
+                      settingsNodeName().c_str(), (long)g_set.group);
         linkBegin();
     }
 

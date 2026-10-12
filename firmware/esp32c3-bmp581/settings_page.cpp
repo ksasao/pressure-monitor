@@ -48,6 +48,15 @@ static void appendHtmlEscaped(String &h, const char *s)
     }
 }
 
+// JSON の文字列に入れる値を、エスケープして足す
+static void appendJsonEscaped(String &j, const char *s)
+{
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') j += '\\';
+        if ((uint8_t)*s >= 0x20) j += *s;
+    }
+}
+
 String buildSettingsPage(bool saved)
 {
     String h;
@@ -84,8 +93,9 @@ button{font-size:1.1em;padding:12px 16px;margin:16px 8px 0 0}
 
     h += F(R"HTML(<div class="box" id="st">読み込み中...</div>
 <script>
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return '&#'+c.charCodeAt(0)+';';});}
 function upd(){fetch('/status').then(function(r){return r.json();}).then(function(j){
- var s='今のモード: '+j.mode_no+' '+j.mode_name+' / 役割: '+j.role+' (番号 '+j.node+')<br>'
+ var s='今のモード: '+j.mode_no+' '+j.mode_name+' / 役割: '+j.role+' ('+esc(j.node)+'、グループ '+j.group+')<br>'
  +'電池: '+(j.vbat_mv/1000).toFixed(3)+' V (最低 '+(j.vbat_min_mv/1000).toFixed(3)+' V)<br>'
  +'気圧: '+j.hpa.toFixed(2)+' hPa / 温度: '+j.temp_c.toFixed(1)+' ℃<br>'
  +'接続中の端末: '+j.stations+' 台 / 空きメモリ: '+j.heap+' B<br>'
@@ -152,18 +162,47 @@ setInterval(upd,1000);upd();
 
     // 役割に関係する項目は、その役割を選んだときだけ表示する (ページのスクリプトが切り替える)。
     // 隠した入力欄には、ブラウザが自動でフォーカスしないので、ページを開いたときに、下の入力欄まで
-    // スクロールしたり、キーボードが出たりしない
-    h += F("<div id=\"netopt\"><label>装置の番号</label><input type=\"number\" name=\"node\" min=\"1\" max=\"");
-    h += String(LINK_MAX_NODE);
-    h += F("\" value=\"");
-    h += String(g_set.node);
-    h += F("\" style=\"width:6.5em\"><small>ハブの画面で、装置を見分けるのに使います。装置ごとに、別の番号にしてください。"
-           "ハブ自身の気圧も、この番号で表示します。</small></div>");
+    // スクロールしたり、キーボードが出たりしない。
+    // 文字の入力欄は、表示していると Chrome がフォーカスしてしまうので、折り畳みの内側に入れる
+    h += F("<div id=\"netopt\"><details><summary>装置の名前: ");
+    appendHtmlEscaped(h, settingsNodeName().c_str());
+    h += F(" <span class=\"chg\">変更する</span></summary>"
+           "<label>装置の名前</label><input type=\"text\" name=\"nname\" maxlength=\"16\" "
+           "autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\" style=\"width:100%\" value=\"");
+    appendHtmlEscaped(h, settingsNodeName().c_str());
+    h += F("\" placeholder=\"");
+    h += settingsDefaultNodeName();
+    h += F("\"><small>ハブの画面と記録で、装置を見分けるのに使います (16 バイトまで。日本語は 5 文字まで)。"
+           "空欄にすると、初期値の ");
+    h += settingsDefaultNodeName();
+    h += F(" (ps- と MAC アドレスの下 6 桁) になります。ハブ自身の気圧も、この名前で表示します。</small></details>");
+
+    // グループ番号 (送信・ハブ)
+    h += F("<label>グループ番号 (1〜255)</label><input type=\"number\" name=\"group\" min=\"1\" max=\"255\" "
+           "style=\"width:6.5em\" value=\"");
+    h += String(g_set.group);
+    h += F("\"><small>同じ番号の送信の装置とハブだけが、やり取りします。初期値は ");
+    h += String(LINK_GROUP_DEFAULT);
+    h += F(" です。近くで、本機の別のセットが動いているときは、セットごとに別の番号にしてください。"
+           "番号を変えるときは、そのセットの全ての装置を、同じ番号にします。</small></div>");
 
     // ハブの接続先。普段は閉じておく (SSID とパスワードの組を、ブラウザがログインの欄とみなして、
     // 開いたときに、SSID の欄にフォーカスすることがあるため)。
     // パスワードは、ページに載せない (空欄のまま保存すると、今のパスワードを残す)
-    h += F("<div id=\"hubopt\">");
+    h += F("<div id=\"hubopt\"><label>ハブのチャンネル</label><select name=\"hubch\">");
+    for (int ch = 1; ch <= 13; ch++) {
+        h += F("<option value=\"");
+        h += String(ch);
+        h += (g_set.hubChannel == ch) ? F("\" selected>") : F("\">");
+        h += String(ch);
+        if (ch == 1 || ch == 6 || ch == 11) h += F(" (おすすめ)");
+        h += F("</option>");
+    }
+    h += F("</select><small>ハブが自分でアクセスポイントになるときのチャンネルです "
+           "(Wi-Fi のルーターに接続したときは、ルーターのチャンネルになります)。"
+           "互いに重ならないのは 1、6、11 です。展示会場などでは、Wi-Fi の混み具合を見るアプリで、"
+           "空いているチャンネルを選んでください。送信の装置は、ハブのチャンネルを自動で探すので、"
+           "変えるのはハブだけで済みます。</small>");
     const String lastIp = settingsHubLastIp();
     if (lastIp.length() > 0) {
         h += F("<small>前回、ルーターに接続したときのアドレス: http://");
@@ -265,8 +304,10 @@ String buildStatusJson(const DeviceStatus &s)
     j += s.modeName;
     j += F("\",\"role\":\"");
     j += s.roleName;
-    j += F("\",\"node\":");
-    j += String(s.node);
+    j += F("\",\"node\":\"");
+    appendJsonEscaped(j, s.nodeName.c_str());
+    j += F("\",\"group\":");
+    j += String(g_set.group);
     j += F("}");
     return j;
 }

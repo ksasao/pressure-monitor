@@ -107,6 +107,11 @@ static const uint32_t BATTERY_PRESENT_MV  = 1000;    // これ未満は電池な
 // BOOT ボタンの長押しと判定する時間
 static const uint32_t LONG_PRESS_MS = 1500;
 
+// BOOT ボタンを、この時間押し続けると、全ての LED を赤で点滅したあと (FACTORY_RESET_BLINK_MS)、
+// 設定を全て初期値に戻して、再起動する (ボタンを離してから)
+static const uint32_t FACTORY_RESET_PRESS_MS = 20000;
+static const uint32_t FACTORY_RESET_BLINK_MS = 1000;
+
 // ------------------------------------------------------ settings mode (Wi-Fi)
 // スマホで読み取る QR コードに入れる文字列 (QR は別途作成してください):
 //   Wi-Fi 接続 (パスワードなし) : WIFI:T:nopass;S:pressure-monitor;;
@@ -147,11 +152,16 @@ static const uint32_t SETTINGS_IDLE_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 //          自分でアクセスポイント (HUB_SSID、http://192.168.4.1/) になる (hub.h)
 // 送信とハブは、無線を使うため、ライトスリープに入りません (電池の持ちが短くなります)。
 //
-// ハブが、自分でアクセスポイントになるときのチャンネル (Wi-Fi のルーターに接続するときは、
-// ルーターのチャンネルになります)。送信の装置は、ハブのチャンネルを自動で探すので、
-// 変えても、送信の装置に書き込み直す必要はありません。混雑した場所では、空いている
-// チャンネルに変えてください
+// ハブが、自分でアクセスポイントになるときのチャンネルの初期値 (1〜13)。設定ページで変えられます
+// (settings の hubChannel)。Wi-Fi のルーターに接続するときは、ルーターのチャンネルになります。
+// 送信の装置は、ハブのチャンネルを自動で探すので、ハブだけ変えれば済みます。
+// 混雑した場所では、空いているチャンネル (重ならない 1、6、11 のどれか) に変えてください
 static const uint8_t LINK_CHANNEL = 1;
+
+// グループ番号の初期値 (1〜255)。設定ページで変えられます (settings の group)。
+// 同じグループ番号の送信の装置とハブだけが、やり取りします。近くで、本機の別のセットが
+// 動いているときは、セットごとに別の番号にします
+static const int32_t LINK_GROUP_DEFAULT = 39;
 
 // チャンネルの自動探索 (link.h)
 //   LINK_BEACON_INTERVAL_MS : ハブがビーコンを送る間隔

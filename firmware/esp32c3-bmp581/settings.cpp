@@ -2,11 +2,12 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_mac.h>
 
 #include "config.h"
 #include "link.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, 1, "", "" };
+const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -32,7 +33,8 @@ void settingsClamp()
     g_set.sat            = clampI(g_set.sat, 0, 100);
     g_set.val            = clampI(g_set.val, 0, 100);
     g_set.role           = clampI(g_set.role, 0, LINK_ROLE_COUNT - 1);
-    g_set.node           = clampI(g_set.node, 1, LINK_MAX_NODE);
+    g_set.group          = clampI(g_set.group, 1, 255);
+    g_set.hubChannel     = clampI(g_set.hubChannel, 1, 13);
 }
 
 void settingsLoad()
@@ -49,7 +51,9 @@ void settingsLoad()
     g_set.sat            = p.getInt("sat",    SETTINGS_DEFAULT.sat);
     g_set.val            = p.getInt("val",    SETTINGS_DEFAULT.val);
     g_set.role           = p.getInt("role",   SETTINGS_DEFAULT.role);
-    g_set.node           = p.getInt("node",   SETTINGS_DEFAULT.node);
+    g_set.group          = p.getInt("group",  SETTINGS_DEFAULT.group);
+    g_set.hubChannel     = p.getInt("hubch",  SETTINGS_DEFAULT.hubChannel);
+    p.getString("nname", g_set.nodeName, sizeof(g_set.nodeName));
     p.getString("wssid", g_set.wifiSsid, sizeof(g_set.wifiSsid));
     p.getString("wpass", g_set.wifiPass, sizeof(g_set.wifiPass));
     s_brownoutCount      = p.getUInt("bo", 0);
@@ -70,7 +74,9 @@ void settingsSave()
     p.putInt("sat",   g_set.sat);
     p.putInt("val",   g_set.val);
     p.putInt("role",  g_set.role);
-    p.putInt("node",  g_set.node);
+    p.putInt("group", g_set.group);
+    p.putInt("hubch", g_set.hubChannel);
+    p.putString("nname", g_set.nodeName);
     p.putString("wssid", g_set.wifiSsid);
     p.putString("wpass", g_set.wifiPass);
     p.end();
@@ -87,15 +93,62 @@ void settingsSaveMode()
 
 void settingsReset()
 {
-    // 表示モード、役割、装置の番号、Wi-Fi は、そのまま残す
+    // 表示モード、役割、グループ番号、チャンネル、装置の名前、Wi-Fi は、そのまま残す
     const AppSettings keep = g_set;
     g_set = SETTINGS_DEFAULT;
     g_set.mode = keep.mode;
     g_set.role = keep.role;
-    g_set.node = keep.node;
+    g_set.group = keep.group;
+    g_set.hubChannel = keep.hubChannel;
+    memcpy(g_set.nodeName, keep.nodeName, sizeof(g_set.nodeName));
     memcpy(g_set.wifiSsid, keep.wifiSsid, sizeof(g_set.wifiSsid));
     memcpy(g_set.wifiPass, keep.wifiPass, sizeof(g_set.wifiPass));
     settingsSave();
+}
+
+String settingsDefaultNodeName()
+{
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);     // ESP-NOW の送信元と同じ MAC アドレス
+    char buf[12];
+    snprintf(buf, sizeof(buf), "ps-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    return String(buf);
+}
+
+String settingsNodeName()
+{
+    return g_set.nodeName[0] ? String(g_set.nodeName) : settingsDefaultNodeName();
+}
+
+void settingsCopyName(char *dst, const char *src, size_t maxBytes)
+{
+    size_t n = 0;
+    while (*src) {
+        const uint8_t c = (uint8_t)*src;
+        // 1 文字のバイト数 (UTF-8 の先頭のバイトで決まる)
+        size_t len = (c < 0x80) ? 1 : (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+        if (n + len > maxBytes) break;
+        bool ok = (c >= 0x20 && c != 0x7F);              // 制御文字は除く
+        for (size_t i = 1; i < len; i++) {
+            if (((uint8_t)src[i] & 0xC0) != 0x80) { ok = false; len = i; break; }
+        }
+        if (ok) {
+            memcpy(dst + n, src, len);
+            n += len;
+        }
+        src += len;
+    }
+    dst[n] = '\0';
+}
+
+void settingsFactoryReset()
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.clear();
+    p.end();
+    g_set = SETTINGS_DEFAULT;
+    s_brownoutCount = 0;
 }
 
 String settingsHubLastIp()

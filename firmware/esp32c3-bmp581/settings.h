@@ -23,13 +23,18 @@
 //   mode           今の表示モード (modes.h)。BOOT ボタンで切り替えると保存される
 //   hue, sat, val  [固定色] 色相 (0〜359 度)、彩度 (0〜100 %)、明度 (0〜100 %)
 //   role           複数台の表示での役割 (link.h の LinkRole)。0 = 単体, 1 = 送信, 2 = ハブ。
+//   group          [送信・ハブ] グループ番号 (1〜255)。同じ番号どうしだけが、やり取りする
+//   hubChannel     [ハブ] 自分でアクセスポイントになるときのチャンネル (1〜13)
 //                  再起動すると有効になる
-//   node           装置の番号 (1〜LINK_MAX_NODE)。ハブの画面で、装置を見分けるのに使う
+//   nodeName       装置の名前 (UTF-8 で NODE_NAME_MAX バイトまで)。ハブの画面や記録で、装置を
+//                  見分けるのに使う。空なら "ps-" + MAC アドレスの下 6 桁 (settingsNodeName())
 //   wifiSsid, wifiPass  [ハブ] 接続する Wi-Fi (ルーター)。SSID が空なら、ハブが自分で
 //                  アクセスポイントになる (hub.h)
 //
 // 感度は、ログの hpf 列を見て調整してください。
 // 静止時の hpf の振れ幅より deltaLimit が小さいと、暗い色がちらつきます
+static const size_t NODE_NAME_MAX = 16;
+
 struct AppSettings {
     int32_t deltaLimit;
     int32_t deltaRange;
@@ -41,7 +46,9 @@ struct AppSettings {
     int32_t sat;
     int32_t val;
     int32_t role;
-    int32_t node;
+    int32_t group;
+    int32_t hubChannel;
+    char    nodeName[NODE_NAME_MAX + 1];
     char    wifiSsid[33];
     char    wifiPass[65];
 };
@@ -52,8 +59,20 @@ extern const AppSettings  SETTINGS_DEFAULT;   // 既定値
 void settingsLoad();      // 保存された設定を読む (なければ既定値)
 void settingsSave();      // 現在の設定を保存する (mode を除く)
 void settingsSaveMode();  // 今の表示モードだけを保存する
-void settingsReset();     // 既定値に戻して保存する (表示モード、役割、装置の番号、Wi-Fi は変えない)
+void settingsReset();     // 既定値に戻して保存する (表示モード、役割、グループ番号、チャンネル、装置の名前、Wi-Fi は変えない)
 void settingsClamp();     // 範囲外の値を直す
+
+// 保存されている値を全て消して、初期値に戻す (表示モード、役割、装置の名前、Wi-Fi、
+// ハブの前回の IP アドレス、ブラウンアウトの累計も含む)
+void settingsFactoryReset();
+
+// 装置の名前。設定がなければ、"ps-" + MAC アドレスの下 6 桁 (例: ps-1a2b3c)
+String settingsNodeName();
+String settingsDefaultNodeName();
+
+// UTF-8 の文字列を、maxBytes バイト以内に切り詰めてコピーする (文字の途中では切らない。
+// 制御文字は除く)。dst は maxBytes + 1 バイト以上
+void settingsCopyName(char *dst, const char *src, size_t maxBytes);
 
 // ハブが、最後に Wi-Fi (ルーター) に接続したときの IP アドレス。設定ページに表示する
 String settingsHubLastIp();
