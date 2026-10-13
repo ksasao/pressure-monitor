@@ -88,6 +88,14 @@ button[disabled] { cursor: not-allowed; opacity: .45; }
 .progress { height: 8px; border-radius: 4px; background: var(--line); margin-top: 14px; overflow: hidden; }
 #bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 
+table.os { width: 100%; border-collapse: collapse; font-size: .85rem; line-height: 1.6; margin: 6px 0 8px; }
+table.os th, table.os td { text-align: left; vertical-align: top; padding: 6px 4px; border-top: 1px solid var(--line); }
+table.os th { white-space: nowrap; padding-right: 10px; }
+code { font-size: .85em; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--muted) 15%, transparent); word-break: break-all; }
+details.meta { margin: 6px 0; }
+details.meta summary { cursor: pointer; color: var(--ink); font-weight: 700; }
+details.meta ul { margin: 6px 0 0; padding-left: 1.2rem; }
+
 .status { margin-top: 10px; font-size: .92rem; font-weight: 700; }
 .status.ok { color: var(--ok); }
 .status.warn { color: var(--warn); }

@@ -46,6 +46,41 @@
       </article>
 
       <aside class="card">
+        <h2>ドライバについて</h2>
+        <p class="meta">
+          この基板は、ESP32-C3 に内蔵の USB を、そのまま使っています（USB シリアル変換 IC は載っていません）。
+          そのため、<strong>ほとんどの環境で、ドライバのインストールは不要です。</strong>
+        </p>
+        <table class="os">
+          <tr><th>Windows 10 / 11</th><td>不要。デバイスマネージャーの「ポート (COM と LPT)」に「USB シリアル デバイス (COMx)」と表示されます。「ほかのデバイス」に「USB JTAG/serial debug unit」が「！」付きで出ることがありますが、デバッグ用のもので、書き込みには関係ありません（何もしなくて大丈夫です）。</td></tr>
+          <tr><th>macOS</th><td>不要。ポートは「cu.usbmodem…」と表示されます。</td></tr>
+          <tr><th>Linux</th><td>ドライバは不要です。ポートを使う権限が必要なので、一度だけ <code>sudo usermod -a -G dialout $USER</code> を実行して、ログインし直してください（Arch Linux では <code>uucp</code> グループ）。</td></tr>
+          <tr><th>ChromeOS</th><td>不要。</td></tr>
+          <tr><th>Windows 8.1 以前</th><td>Chrome / Edge が対応していないため、このツールは使えません。</td></tr>
+        </table>
+        <details class="meta">
+          <summary>ポートが表示されないとき</summary>
+          <ul>
+            <li>充電専用の USB ケーブルでは、ポートが表示されません。データ通信に対応したケーブルに替えてください。</li>
+            <li>Windows で、以前に Zadig などでドライバを入れ替えた場合は、COM ポートとして見えなくなっていることがあります。
+              デバイスマネージャーで、その基板のデバイスを右クリックして「デバイスのアンインストール」を選び、
+              「このデバイスのドライバーを削除しようとしました」に印を付けて削除してから、USB を挿し直してください。</li>
+          </ul>
+        </details>
+        <details class="meta">
+          <summary>ほかの ESP32 ボードを使うとき（参考）</summary>
+          <p>USB シリアル変換 IC を載せたボードでは、その IC のドライバが必要なことがあります。インストーラー（実行するだけのもの）がある配布先です。</p>
+          <ul>
+            <li>CP210x（Silicon Labs）:
+              <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" target="_blank" rel="noopener">Windows / macOS</a></li>
+            <li>CH340 / CH341（WCH）:
+              <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" rel="noopener">Windows</a> /
+              <a href="https://www.wch-ic.com/downloads/CH34XSER_MAC_ZIP.html" target="_blank" rel="noopener">macOS</a></li>
+            <li>FTDI:
+              <a href="https://ftdichip.com/drivers/vcp-drivers/" target="_blank" rel="noopener">Windows（setup executable）/ macOS</a></li>
+          </ul>
+        </details>
+
         <h2>うまくいかないとき</h2>
         <ul class="meta">
           <li><strong>接続できない</strong>: Arduino IDE のシリアルモニタなど、ポートを使っているほかのアプリを閉じてください。</li>
