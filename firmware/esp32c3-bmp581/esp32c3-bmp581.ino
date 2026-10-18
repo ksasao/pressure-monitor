@@ -14,8 +14,9 @@
  * ボード設定 (Arduino IDE)
  *   Board            : ESP32C3 Dev Module
  *   USB CDC On Boot  : Enabled      <-- Disabled だと Serial が出ません
- *   Partition Scheme : Huge APP (3MB No OTA/1MB SPIFFS)
- *                                   <-- 既定 (1.2MB APP) だと、容量の 9 割近くになります
+ *   Partition Scheme : No OTA (2MB APP/2MB SPIFFS)
+ *                                   <-- 既定 (1.2MB APP) だと、プログラムが入りません。
+ *                                       SPIFFS の領域 (約 1.9MB) を、基板の中への記録に使います (devlog.h)
  *   Flash Size       : 4MB (32Mb)   <-- 既定のまま
  *
  * --- 動作 ---
@@ -57,6 +58,7 @@
  *   settings_page.*     設定ページの HTML と、状況の JSON
  *   portal.*            設定モードの Wi-Fi / DNS / Web サーバ
  *   monitor_page.*      設定モードで最初に開くページ (気圧の絶対値、変化量、グラフ)
+ *   devlog.*            基板の中への記録 (フラッシュ。表示ページから操作し、CSV でダウンロード)
  *   link.*              複数台の表示。ESP-NOW の送信と、パケットの形式
  *   hub.*               ハブ (受信したデータを、スマホのブラウザへ送る)
  *   hub_page.*          ハブの表示ページ (HTML とスクリプト)
@@ -81,6 +83,7 @@
 #include "power.h"
 #include "link.h"
 #include "hub.h"
+#include "devlog.h"
 
 // 表示モード (modes.h): 0 = 標準, 1 = ドライブ, 2 = カスタム, 3 = 固定色。電源を切っても残る
 // 今のモードは g_set.mode が持つ (設定ページからも変えられるため、ここでは複製しない)
@@ -237,6 +240,7 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
 
     // 設定モードの表示ページへ (設定モードでなければ何もしない)
     portalPushSample(nowMs, s.raw, hpf, color.r, color.g, color.b);
+    devlogPush(s.raw, p.hpfShift, s.tempC);   // 基板の中への記録 (記録中だけ。変化量は記録しない)
 
     if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
 }
@@ -282,6 +286,9 @@ void setup()
     // 設定モードは、センサの有無にかかわらず Wi-Fi を起動する
     // (Wi-Fi が回路で動くかの確認が目的のため)
     // 通常モードでは、役割が送信・ハブのときだけ、無線を起動する (link.h)
+    // 基板の中への記録 (devlog.h)。記録の途中で再起動したときは、続きから記録する
+    devlogBegin(&g_pressureHpf);
+
     if (bootIsSettingsMode()) {
         portalBegin();
     } else {
@@ -332,6 +339,7 @@ void loop()
     // センサが見つからない場合でも動かす
     if (bootIsSettingsMode()) portalService(millis());
     hubService(millis());           // ハブのときだけ動く (受信したデータをスマホへ)
+    devlogService(millis());        // 基板の中への記録の操作 (表示ページから)
     linkService(millis());          // 送信の装置のときだけ動く (ハブのチャンネルの探索)
 
     if (!g_sensorReady) {
@@ -370,8 +378,26 @@ void loop()
         // 設定モード中は、最後の LED を状態表示にする
         //   暗い水色 : Wi-Fi は起動していて、スマホの接続を待っている
         //   緑       : スマホが接続している
+        // 記録の状態は、LED5 の点滅で知らせる。USB の検出窓 (USB_PROBE_INTERVAL_MS ごとに、
+        // 眠らずに起きている USB_PROBE_WINDOW_MS) の中で点滅するので、ライトスリープの時間を減らさない
+        //   記録中             : 赤で 1 回 (0〜REC_BLINK_MS)
+        //   いっぱいで止まった : 黄色で 2 回 (0〜REC_BLINK_MS と、2〜3 x REC_BLINK_MS)。
+        //                        記録を消去するか、新しく記録を始めるまで続ける
+        const uint32_t phase = now % USB_PROBE_INTERVAL_MS;
+        bool blink = false;
+        CRGB blinkColor;
+        if (devlogRecording()) {
+            blink      = phase < REC_BLINK_MS;
+            blinkColor = REC_COLOR_RECORDING;
+        } else if (devlogFull()) {
+            blink      = phase < REC_BLINK_MS || (phase >= 2 * REC_BLINK_MS && phase < 3 * REC_BLINK_MS);
+            blinkColor = REC_COLOR_FULL;
+        }
         if (bootIsSettingsMode()) {
-            displaySetStatus(true, portalHasClient() ? CRGB(0, 60, 0) : CRGB(0, 40, 40));
+            displaySetStatus(true, blink ? blinkColor
+                                         : (portalHasClient() ? CRGB(0, 60, 0) : CRGB(0, 40, 40)));
+        } else {
+            displaySetStatus(blink, blinkColor);
         }
         // 固定色モードには、明るさの最大値を掛けない (色の明度で決める)
         displayRenderTrail(modeIsSolid(currentMode()) ? 255 : (uint8_t)g_set.brightness);

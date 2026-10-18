@@ -28,6 +28,11 @@ public:
     // 内部状態を捨てる (次の update() が、初回として扱われる)
     void reset();
 
+    // 内部状態の読み出しと復元。記録 (devlog.h) から、同じ出力を計算し直すために使う
+    struct State { int64_t prevX; int64_t y; bool init; };
+    State getState() const { return { prevX_, y_, init_ }; }
+    void  setState(const State &s) { prevX_ = s.prevX; y_ = s.y; init_ = s.init; }
+
 private:
     int64_t prevX_ = 0;     // 前回の入力 (内部のスケール)
     int64_t y_     = 0;     // フィルタの出力の状態 (内部のスケール)

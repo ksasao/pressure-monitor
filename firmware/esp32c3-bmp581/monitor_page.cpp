@@ -35,6 +35,11 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #st{font-size:.8em;color:var(--sub)}
 .rc{display:flex;gap:6px;align-items:center}
 #rec.on{background:#c33;border-color:#c33;color:#fff}
+#recdlg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:10;align-items:center;justify-content:center;padding:12px}
+#recdlg.on{display:flex}
+#recdlg .box{background:var(--bg);color:var(--fg);border-radius:10px;padding:14px;max-width:420px;line-height:1.55;font-size:.92em}
+#recdlg .box button{display:block;width:100%;margin-top:8px;padding:10px;font-size:1em}
+#recdlg small{color:var(--sub);display:block;margin-top:2px}
 /* 横向き (高さが低い) ときは、数値を小さく 1 行にして、グラフを広くする */
 @media (orientation:landscape) and (max-height:520px){
  #top{padding:4px 10px 2px;gap:4px 10px;align-items:center}
@@ -66,7 +71,17 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 <div id="gw"><canvas id="cv"></canvas><div id="sc"></div></div>
 <div id="bot"><span id="st">接続しています...</span>
  <span class="rc"><span id="ri" class="u"></span><button type="button" id="rec">● 記録</button>
- <button type="button" id="dl">CSV 保存</button><button type="button" id="clr">消去</button></span></div>
+ <a class="btn" id="dl" href="/log.csv">CSV 保存</a><button type="button" id="clr">消去</button></span></div>
+<div id="recdlg"><div class="box">
+ <b>基板の中に記録します（30Hz、最長 約 5.5 時間）</b>
+ <div id="recold"></div>
+ <button type="button" id="recon">Wi-Fi のまま記録する</button>
+ <small>このページで、グラフを見ながら記録します。</small>
+ <button type="button" id="recoff">記録して Wi-Fi をオフにする（省電力）</button>
+ <small>基板が再起動し、Wi-Fi をオフにして記録を続けます（LED5 が赤く点滅します）。
+  止めるときは、BOOT ボタンを長押しして設定モードに入り、このページの「■ 停止」を押してください。</small>
+ <button type="button" id="reccancel">やめる</button>
+</div></div>
 <script>
 var MODES=['標準','ドライブ','カスタム','固定色'];
 var MAXN=60*30+60;                 // 60 秒分 (30Hz) と少しの余裕
@@ -85,20 +100,19 @@ function connect(){
  ws.onclose=function(){ws=null;setTimeout(connect,1000);};
  ws.onerror=function(){try{ws.close();}catch(x){}};
 }
-var offset=null;   // 基板の millis -> スマホの時計
+var HDR=24;        // フレームのヘッダ (monitor_page.h)
+var rec={on:false,full:false,none:false,count:0,cap:0};
+var dl={sent:0,total:0,t0:0,s0:0,lastSent:-1,lastMove:0};   // CSV のダウンロードの進み具合     // 基板の中への記録の状態 (devlog.h)
 function onFrame(b){
- var dv=new DataView(b);if(dv.byteLength<8||dv.getUint8(0)!==77||dv.getUint8(1)!==1)return;
+ var dv=new DataView(b);if(dv.byteLength<HDR||dv.getUint8(0)!==77||dv.getUint8(1)!==3)return;
  var n=dv.getUint8(2);mode=dv.getUint8(3);temp=dv.getInt16(4,true)/100;
- n=Math.min(n,Math.floor((dv.byteLength-8)/16));if(n<1)return;
- // 最後のサンプルの時刻を、受け取った時刻とみなす。遅れの最も小さい値に合わせ、
- // 時計のずれにはゆっくり追従する (基板が再起動したら、合わせ直す)
- var now=Date.now(),off=now-dv.getUint32(8+(n-1)*16,true);
- if(offset===null||off<offset||off-offset>2000)offset=off;else offset+=(off-offset)*0.001;
- for(var i=0;i<n;i++){var o=8+i*16;
+ var f=dv.getUint8(6);rec.on=!!(f&1);rec.full=!!(f&2);rec.none=!!(f&4);rec.count=dv.getUint32(8,true);rec.cap=dv.getUint32(12,true);
+ dlUpdate(dv.getUint32(16,true),dv.getUint32(20,true));
+ n=Math.min(n,Math.floor((dv.byteLength-HDR)/16));if(n<1)return;
+ for(var i=0;i<n;i++){var o=HDR+i*16;
   var s={t:dv.getUint32(o,true),raw:dv.getInt32(o+4,true),hpf:dv.getInt32(o+8,true),
    r:dv.getUint8(o+12),g:dv.getUint8(o+13),b:dv.getUint8(o+14)};
-  s.c='rgb('+s.r+','+s.g+','+s.b+')';buf.push(s);
-  if(recording)addRow(s.t+offset,s.t,s.raw,s.hpf,Math.round(temp*100),(s.r<<16)|(s.g<<8)|s.b,mode);}
+  s.c='rgb('+s.r+','+s.g+','+s.b+')';buf.push(s);}
  if(buf.length>MAXN)buf.splice(0,buf.length-MAXN);
  last=Date.now();dirty=true;
 }
@@ -174,72 +188,81 @@ function lock(){if(wl||!('wakeLock' in navigator)||document.visibilityState!=='v
  navigator.wakeLock.request('screen').then(function(l){wl=l;l.addEventListener('release',function(){wl=null;});}).catch(function(){});}
 document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')lock();});
 document.addEventListener('click',lock);
-// ---- 記録 (IndexedDB。使えない場合はメモリ)
-// 1 行 = 7 個の整数: 時刻 (チャンクの先頭からの ms), dev_ms, raw, hpf, 温度 x100, 色 (RGB), mode
-var COLS=7,CH=4096,chunk=null,chunkN=0,chunkBase=0,total=0,recording=false,db=null,mem=[];
-function addRow(t,ms,raw,hpf,t100,rgb,md){
- if(!chunk){chunk=new Int32Array(CH*COLS);chunkN=0;chunkBase=Math.round(t);}
- var i=chunkN*COLS;
- chunk[i]=Math.round(t)-chunkBase;chunk[i+1]=ms|0;chunk[i+2]=raw;chunk[i+3]=hpf;
- chunk[i+4]=t100;chunk[i+5]=rgb;chunk[i+6]=md;
- chunkN++;total++;
- if(chunkN>=CH)saveChunk();
-}
-function saveChunk(){
- if(!chunk||chunkN===0)return;
- var rec={base:chunkBase,n:chunkN,buf:chunk.slice(0,chunkN*COLS).buffer};chunk=null;chunkN=0;
- if(db){try{db.transaction('c','readwrite').objectStore('c').add(rec);return;}catch(e){}}
- mem.push(rec);
-}
-setInterval(function(){if(recording)saveChunk();},5000);
-// ハブの画面と同じアドレス (192.168.4.1) で開くことがあるので、別の名前のデータベースにする
-function openDb(cb){
- try{var rq=indexedDB.open('pressure-monitor-log',1);
-  rq.onupgradeneeded=function(){rq.result.createObjectStore('c',{autoIncrement:true});};
-  rq.onsuccess=function(){db=rq.result;cb();};rq.onerror=function(){db=null;cb();};
- }catch(e){db=null;cb();}
-}
-function eachChunk(fn,done){
- mem.forEach(fn);
- if(!db){done();return;}
- var rq=db.transaction('c','readonly').objectStore('c').openCursor();
- rq.onsuccess=function(){var c=rq.result;if(c){fn(c.value);c.continue();}else done();};
- rq.onerror=function(){done();};
-}
+// ---- 記録 (基板の中に記録する。devlog.h)
+// ブラウザの中には記録しない。Android の Wi-Fi のログイン画面は、ブラウザの中で作ったファイルを
+// 保存できないため。基板が返す /log.csv なら、ログイン画面でも保存できる。
+// また、スマホの画面が消えても、基板が記録を続ける
 function pad(n,w){n=''+n;while(n.length<w)n='0'+n;return n;}
-function ts(t){var d=new Date(t);return d.getFullYear()+'-'+pad(d.getMonth()+1,2)+'-'+pad(d.getDate(),2)+' '
- +pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+pad(d.getMilliseconds(),3);}
-function download(){
- saveChunk();
- var parts=['\ufefftime,unix_ms,dev_ms,pressure_hPa,raw,hpf,temperature_C,led_r,led_g,led_b,mode\n'];
- eachChunk(function(rec){
-  var a=new Int32Array(rec.buf),s=[];
-  for(var r=0;r<rec.n;r++){var i=r*COLS,t=rec.base+a[i],rgb=a[i+5];
-   s.push(ts(t)+','+t+','+(a[i+1]>>>0)+','+(a[i+2]/6400).toFixed(4)+','+a[i+2]+','+a[i+3]+','
-    +(a[i+4]/100).toFixed(2)+','+((rgb>>16)&255)+','+((rgb>>8)&255)+','+(rgb&255)+','+(a[i+6]+1)+'\n');}
-  parts.push(s.join(''));
- },function(){
-  var d=new Date(),fn='pressure-monitor-'+d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
-   +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';
-  var url=URL.createObjectURL(new Blob(parts,{type:'text/csv'}));
-  var a=document.createElement('a');a.href=url;a.download=fn;document.body.appendChild(a);a.click();
-  setTimeout(function(){URL.revokeObjectURL(url);a.remove();},10000);
+function post(q){return fetch('/rec',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q})
+ .then(function(r){if(r.ok)return true;return r.text().then(function(t){alert(t||('エラー '+r.status));return false;});})
+ .catch(function(){alert('基板に送れませんでした。もう一度押してください。');return false;});}
+var recBtn=document.getElementById('rec'),dlA=document.getElementById('dl');
+function fmtMin(n){return Math.floor(n/30/60)+' 分';}
+function mb(b){return (b/1048576).toFixed(1);}
+// 基板が送ったバイト数から、進み具合と残り時間を求める
+function dlUpdate(sent,total){
+ var now=Date.now();
+ if(total!==dl.total||sent<dl.sent){dl.t0=now;dl.s0=sent;}   // 新しいダウンロード
+ if(sent!==dl.lastSent){dl.lastSent=sent;dl.lastMove=now;}
+ dl.sent=sent;dl.total=total;
+}
+function dlText(){
+ if(!dl.total)return '';
+ var now=Date.now();
+ if(dl.sent>=dl.total)return now-dl.lastMove<10000?'CSV の送信が終わりました（'+mb(dl.total)+' MB）':'';
+ if(now-dl.lastMove>15000)return 'CSV の送信が止まっています（'+mb(dl.sent)+' / '+mb(dl.total)+' MB）';
+ var pct=Math.floor(100*dl.sent/dl.total),el=(now-dl.t0)/1000,rate=el>2?(dl.sent-dl.s0)/el:0;
+ var rest=rate>0?Math.ceil((dl.total-dl.sent)/rate/60):0;
+ return 'CSV 送信中 '+mb(dl.sent)+' / '+mb(dl.total)+' MB（'+pct+'%'+(rest?'、残り約 '+rest+' 分':'')+'）';
+}
+function recUi(){
+ recBtn.textContent=rec.on?'■ 停止':'● 記録';recBtn.className=rec.on?'on':'';
+ var t=rec.count.toLocaleString()+' 行';
+ if(rec.on)t='記録中 '+t+'（残り約 '+fmtMin(rec.cap-rec.count)+'）';
+ else if(rec.full)t='いっぱいで停止 '+t;
+ if(rec.none)t='記録できません（記録の領域がありません）';
+ var d=dlText();if(d)t=d;
+ document.getElementById('ri').textContent=t;
+}
+// 停止するときも、スマホの時計を送る (基板の時計のずれを補正する)
+var dlg=document.getElementById('recdlg');
+recBtn.onclick=function(){
+ if(rec.on){post('op=stop&t='+Date.now());return;}
+ document.getElementById('recold').textContent=rec.count>0
+  ?'前の記録（'+rec.count.toLocaleString()+' 行）は消えます。必要なら、先に「CSV 保存」を押してください。':'';
+ dlg.className='on';
+};
+function startRec(wifiOff){
+ dlg.className='';
+ post('op=start&t='+Date.now()+'&tz='+new Date().getTimezoneOffset()+'&wifi='+(wifiOff?'off':'on')).then(function(ok){
+  if(!ok)return;
+  if(wifiOff){alert('記録を始めました。基板は再起動して、Wi-Fi をオフにして記録を続けます（LED5 が赤く点滅します）。'
+   +'止めるときは、BOOT ボタンを長押しして設定モードに入り、このページの「■ 停止」を押してください。');return;}
+  // 基板が記録を始めたかを、少し待ってから確かめる
+  setTimeout(function(){if(!rec.on)alert('記録が始まっていないようです。もう一度「● 記録」を押してください。');},3000);
  });
 }
-function clearAll(){
- if(!confirm('記録を全て消去します。よろしいですか？'))return;
- chunk=null;chunkN=0;mem=[];total=0;
- if(db){try{db.transaction('c','readwrite').objectStore('c').clear();}catch(e){}}
-}
-var recBtn=document.getElementById('rec');
-function recUi(){recBtn.textContent=recording?'■ 停止':'● 記録';recBtn.className=recording?'on':'';
- document.getElementById('ri').textContent=(recording?'記録中 ':'')+total+' 行';}
-recBtn.onclick=function(){recording=!recording;if(!recording)saveChunk();recUi();};
-document.getElementById('dl').onclick=download;
-document.getElementById('clr').onclick=function(){clearAll();recUi();};
+document.getElementById('recon').onclick=function(){startRec(false);};
+document.getElementById('recoff').onclick=function(){startRec(true);};
+document.getElementById('reccancel').onclick=function(){dlg.className='';};
+// CSV は、基板からダウンロードする。ファイル名は、押した日時
+dlA.onclick=function(){
+ if(rec.count===0){alert('記録がありません。');return false;}
+ // 大きいときは、時間がかかることを先に知らせる (1 行 83 バイト)
+ var size=rec.count*83;
+ if(size>5*1048576&&!confirm('CSV は約 '+mb(size)+' MB です。保存先を選んだあと、数分かかります。'
+  +'進み具合は、この画面の下と、スマホの通知に表示されます。保存が終わるまで、このページを閉じないでください。'))return false;
+ var d=new Date();
+ dlA.href='/log.csv?name=pressure-monitor-'+d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
+  +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';
+ return true;
+};
+document.getElementById('clr').onclick=function(){
+ if(rec.count===0&&!rec.on)return;
+ if(confirm('基板の中の記録を全て消去します。よろしいですか？'))post('op=clear');
+};
 setInterval(recUi,500);
 
-openDb(function(){eachChunk(function(rec){total+=rec.n;},function(){recUi();});});
 connect();lock();
 </script></body></html>
 )HTML";

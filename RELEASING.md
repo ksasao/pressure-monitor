@@ -37,10 +37,10 @@
 |---|---|
 | ボード | ESP32C3 Dev Module |
 | USB CDC On Boot | Enabled |
-| Partition Scheme | Huge APP (3MB No OTA/1MB SPIFFS) |
+| Partition Scheme | No OTA (2MB APP/2MB SPIFFS) |
 | そのほか | 既定のまま（Flash Size 4MB など） |
 
-リリースのスクリプトは、この設定と同じ条件（FQBN `esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app`）でビルドします。設定を変えたときは、[`tools/release.mjs`](tools/release.mjs) の `fqbn` も合わせてください。
+リリースのスクリプトは、この設定と同じ条件（FQBN `esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_ota`）でビルドします。設定を変えたときは、[`tools/release.mjs`](tools/release.mjs) の `fqbn` も合わせてください。
 
 動作を確認したボードパッケージとライブラリ:
 

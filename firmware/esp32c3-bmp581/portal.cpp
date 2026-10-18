@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "settings_page.h"
 #include "monitor_page.h"
+#include "devlog.h"
 #include "display.h"
 #include "battery.h"
 #include "boot.h"
@@ -36,7 +37,8 @@ static bool     s_started = false;         // portalBegin() を呼んだ (設定
 // 表示ページ (monitor_page.h) へ送るサンプル。約 100ms ごとに、まとめて WebSocket で送る
 static const uint8_t  PUSH_MAX_SAMPLES = 16;
 static const uint32_t PUSH_INTERVAL_MS = 100;
-static uint8_t  s_push[8 + 16 * PUSH_MAX_SAMPLES];
+static const size_t   PUSH_HEADER = 24;
+static uint8_t  s_push[PUSH_HEADER + 16 * PUSH_MAX_SAMPLES];
 static uint8_t  s_pushCount  = 0;
 static uint32_t s_lastPushMs = 0;
 
@@ -54,16 +56,24 @@ static void flushSamples(uint32_t nowMs)
     if (s_pushCount == 0) return;
     const int16_t t100 = (int16_t)lroundf(s_tempC * 100.0f);
     s_push[0] = 'M';
-    s_push[1] = 1;
+    s_push[1] = 3;
     s_push[2] = s_pushCount;
     s_push[3] = (uint8_t)g_set.mode;
     s_push[4] = (uint8_t)t100;
     s_push[5] = (uint8_t)((uint16_t)t100 >> 8);
-    s_push[6] = 0;
+    // 基板の中への記録の状態 (devlog.h)
+    s_push[6] = (devlogRecording() ? 1 : 0) | (devlogFull() ? 2 : 0) | (devlogAvailable() ? 0 : 4);
     s_push[7] = 0;
+    put32(s_push + 8, devlogCount());
+    put32(s_push + 12, devlogCapacity());
+    // CSV のダウンロードの進み具合 (送ったバイト数と、全体のバイト数)
+    uint32_t dlSent = 0, dlTotal = 0;
+    devlogDownloadProgress(dlSent, dlTotal);
+    put32(s_push + 16, dlSent);
+    put32(s_push + 20, dlTotal);
     // 送信が詰まっている接続先があるときは、このフレームを捨てる (メモリを使い切らないため)
     if (s_ws.count() > 0 && s_ws.availableForWriteAll()) {
-        s_ws.binaryAll(s_push, 8 + 16 * s_pushCount);
+        s_ws.binaryAll(s_push, PUSH_HEADER + 16 * s_pushCount);
     }
     s_pushCount = 0;
 }
@@ -75,6 +85,36 @@ static void handleRoot(AsyncWebServerRequest *req)
 {
     s_lastActivityMs = millis();
     req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML, strlen(MONITOR_PAGE_HTML));
+}
+
+// 基板の中への記録の操作 (表示ページの「記録」「停止」「消去」)。op = start / stop / clear。
+// start では、スマホの時計 (t、UNIX 時刻 [ms])、タイムゾーン (tz、分)、wifi (off なら、記録を始めたあと
+// 再起動して Wi-Fi をオフにする) を受け取る。stop では、スマホの時計 (t) を受け取り、時刻を補正する
+static void handleRec(AsyncWebServerRequest *req)
+{
+    s_lastActivityMs = millis();
+    if (!devlogAvailable()) {
+        req->send(503, "text/plain; charset=utf-8",
+                  "記録の領域（パーティション spiffs）がありません。ファームウェアを書き込み直してください。");
+        return;
+    }
+    const String op = req->hasParam("op", true) ? req->getParam("op", true)->value() : String();
+    if (op == "start") {
+        const int64_t t  = req->hasParam("t", true) ? strtoll(req->getParam("t", true)->value().c_str(), nullptr, 10) : 0;
+        const int32_t tz = req->hasParam("tz", true) ? (int32_t)req->getParam("tz", true)->value().toInt() : 0;
+        const bool wifiOff = req->hasParam("wifi", true) && req->getParam("wifi", true)->value() == "off";
+        devlogRequestStart(t, tz, wifiOff);
+    } else if (op == "stop") {
+        // 停止したときのスマホの時計で、記録の時刻のずれを補正する
+        const int64_t t = req->hasParam("t", true) ? strtoll(req->getParam("t", true)->value().c_str(), nullptr, 10) : 0;
+        devlogRequestStop(t);
+    } else if (op == "clear") {
+        devlogRequestClear();
+    } else {
+        req->send(400, "text/plain", "bad op");
+        return;
+    }
+    req->send(204);
 }
 
 // 設定のページ (表示ページの「設定」ボタンから開く)
@@ -298,6 +338,8 @@ void portalBegin()
 
     s_server.on("/",       HTTP_GET,  handleRoot);
     s_server.on("/settings", HTTP_GET, handleSettings);
+    s_server.on("/log.csv",  HTTP_GET, devlogHandleCsv);
+    s_server.on("/rec",      HTTP_POST, handleRec);
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);
     s_server.on("/live",   HTTP_POST, handleLive);
@@ -333,7 +375,9 @@ void portalService(uint32_t nowMs)
 
     // ページ (表示または設定) を開いている間は、無操作とみなさない。
     // ページを閉じる (スマホの画面が消える) と、WebSocket が切れて、時間を数え始める
-    if (s_ws.count() > 0) s_lastActivityMs = nowMs;
+    // 基板の中に記録している間も、終了しない (スマホの画面が消えても、記録を続ける)
+    // CSV をダウンロードしている間も、終了しない (大きい記録は、数分かかる)
+    if (s_ws.count() > 0 || devlogRecording() || devlogDownloading()) s_lastActivityMs = nowMs;
 
     // 電池電圧の監視 (1 秒ごと)。最低値を記録して、Wi-Fi 送信時の電圧の落ち込みを見る
     if (nowMs - s_lastVbatMs >= 1000) {
@@ -370,7 +414,7 @@ void portalPushSample(uint32_t ms, int32_t raw, int32_t hpf, uint8_t r, uint8_t 
     if (s_ws.count() == 0) { s_pushCount = 0; return; }     // 見ている人がいなければ溜めない
     if (s_pushCount >= PUSH_MAX_SAMPLES) flushSamples(millis());
 
-    uint8_t *p = s_push + 8 + 16 * s_pushCount;
+    uint8_t *p = s_push + PUSH_HEADER + 16 * s_pushCount;
     put32(p, ms);
     put32(p + 4, (uint32_t)raw);
     put32(p + 8, (uint32_t)hpf);

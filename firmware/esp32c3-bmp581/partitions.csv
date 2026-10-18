@@ -1,0 +1,10 @@
+# フラッシュ (4MB) の割り当て。Arduino IDE の Partition Scheme の設定より優先されます。
+# (スケッチのフォルダにある partitions.csv を、ボードパッケージが使う)
+# 内容は "No OTA (2MB APP/2MB SPIFFS)" と同じです。spiffs の領域は、基板の中への記録 (devlog.h) に使います。
+# 設定 (nvs) の位置は、ほかの Partition Scheme と同じなので、書き換えても設定は残ります。
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x200000,
+spiffs,   data, spiffs,  0x210000,0x1E0000,
+coredump, data, coredump,0x3F0000,0x10000,

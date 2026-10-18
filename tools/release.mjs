@@ -34,8 +34,8 @@ const VARIANTS = {
     sketchDir: "firmware/esp32c3-bmp581",
     sketch: "esp32c3-bmp581.ino",
     // Arduino IDE の設定と同じ: ESP32C3 Dev Module / USB CDC On Boot: Enabled /
-    // Partition Scheme: Huge APP。ほかは既定のまま
-    fqbn: "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app",
+    // Partition Scheme: No OTA (2MB APP/2MB SPIFFS。データの領域は、基板の中への記録に使う)。ほかは既定のまま
+    fqbn: "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_ota",
     chipFamily: "ESP32-C3",
     flasherDir: "docs/esp32c3-bmp581/flasher",
     // 書き込むファイル。address はビルドの flash_args から読む (読めないときは、この値)

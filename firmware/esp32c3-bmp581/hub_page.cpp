@@ -14,6 +14,11 @@ h1{font-size:1.15em;margin:0 0 6px}
 button{font-size:1em;padding:8px 12px}
 #rec.on{background:#c33;color:#fff;border-color:#c33}
 .sub{color:var(--sub);font-size:.85em}
+#wv{display:none;margin:0 0 8px;padding:8px 10px;border-radius:8px;background:#fff3cd;color:#5c4400;font-size:.85em;line-height:1.5}
+#wv.on{display:block}
+#wv a,#wv button{font-size:1em;margin:4px 6px 0 0;padding:5px 10px;border-radius:6px;border:1px solid #c9a227;background:#ffe08a;color:#3d2e00;text-decoration:none;display:inline-block;cursor:pointer}
+#wv .x{float:right;background:none;border:0;margin:0;padding:0 4px;font-size:1.2em}
+
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
 .card{background:var(--card);border-radius:8px;padding:8px;border:2px solid transparent}
 .card.stale{opacity:.45}
@@ -30,6 +35,11 @@ canvas{width:100%;height:90px;display:block;margin-top:6px}
 .kv{font-size:.85em;color:var(--sub);margin-top:4px;line-height:1.5}
 </style></head><body>
 <h1>pressure-hub</h1>
+<div id="wv"><button type="button" class="x" onclick="this.parentNode.className=''">×</button>
+<b>この画面（Wi-Fi のログイン画面）では、記録を CSV に保存できません。</b><br>
+記録するときは、Chrome を開いて <b><span class="wvurl"></span></b> を表示してください
+（開けないときは、モバイルデータ通信をオフにしてください）。<br>
+<a class="wvopen" href="#">Chrome で開く</a><button type="button" class="wvcopy">アドレスをコピー</button></div>
 <div class="bar"><span id="conn" class="sub">接続しています...</span></div>
 <div class="bar"><span id="net" class="sub"></span></div>
 <div class="bar">
@@ -284,9 +294,31 @@ function clearAll(){
  if(db){try{db.transaction('c','readwrite').objectStore('c').clear();}catch(e){}}
 }
 var recBtn=document.getElementById('rec');
-recBtn.onclick=function(){recording=!recording;if(!recording)saveChunk();
+// ---- Android の Wi-Fi のログイン画面 (WebView) の検出。
+// ここでは、ブラウザのダウンロード (blob:) が使えず、「保存できませんでした」になる。
+// また、記録はブラウザごとに別の場所に保存されるので、Chrome に移せない。
+// そのため、記録を始める前に、Chrome で開き直すよう案内する
+var inWebView=/; wv\)/.test(navigator.userAgent);
+var pageUrl='http://'+location.host+location.pathname;
+(function(){
+ var w=document.getElementById('wv');
+ w.querySelector('.wvurl').textContent=pageUrl;
+ w.querySelector('.wvopen').href='intent://'+location.host+location.pathname+'#Intent;scheme=http;package=com.android.chrome;end';
+ w.querySelector('.wvcopy').onclick=function(){
+  var t=document.createElement('textarea');t.value=pageUrl;document.body.appendChild(t);t.select();
+  var ok=false;try{ok=document.execCommand('copy');}catch(e){}t.remove();
+  this.textContent=ok?'コピーしました':'コピーできませんでした';};
+ if(inWebView)w.className='on';
+})();
+function webViewBlocked(){
+ if(!inWebView)return false;
+ var w=document.getElementById('wv');w.className='on';w.scrollIntoView&&w.scrollIntoView();
+ alert('この画面（Wi-Fi のログイン画面）では、CSV を保存できません。\nChrome で '+pageUrl+' を開いてから、記録してください。');
+ return true;
+}
+recBtn.onclick=function(){if(!recording&&webViewBlocked())return;recording=!recording;if(!recording)saveChunk();
  recBtn.textContent=recording?'記録を停止':'記録を開始';recBtn.className=recording?'on':'';lock();};
-document.getElementById('dl').onclick=function(){lock();download();};
+document.getElementById('dl').onclick=function(){if(webViewBlocked())return;lock();download();};
 document.getElementById('clr').onclick=clearAll;
 
 // ---- 画面を点けたままにする

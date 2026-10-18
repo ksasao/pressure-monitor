@@ -103,6 +103,18 @@ static const uint32_t BATTERY_DIVIDER     = 2;       // R9 = R10 = 1MΩ
 static const uint8_t  BATTERY_SAMPLES     = 16;      // 平均する回数
 static const uint32_t BATTERY_PRESENT_MV  = 1000;    // これ未満は電池なしとみなす
 
+// ------------------------------------------------------------- recording
+// 基板の中への記録 (devlog.h) の状態を、LED5 の点滅で知らせる。
+//   記録中             : USB_PROBE_INTERVAL_MS (5 秒) ごとに、赤で REC_BLINK_MS だけ 1 回点灯
+//   いっぱいで止まった : 同じ間隔で、黄色で 2 回点灯 (記録を消去するか、新しく始めるまで)
+// 点灯するのは、USB の検出窓 (眠らずに起きている USB_PROBE_WINDOW_MS) の中なので、
+// ライトスリープの時間を減らさない (2 回の点滅は 3 x REC_BLINK_MS で、窓に収まる)。
+// 明るさは、LED の明るさの最大値の設定 (brightness) が掛かる
+static const uint32_t REC_BLINK_MS = 100;
+static_assert(3 * REC_BLINK_MS <= USB_PROBE_WINDOW_MS, "blink must fit in the USB probe window");
+#define REC_COLOR_RECORDING CRGB(80, 0, 0)     // 赤
+#define REC_COLOR_FULL      CRGB(80, 45, 0)    // 黄色 (WS2812B は緑が強いので、緑を控えめに)
+
 // ------------------------------------------------------------ BOOT button
 // BOOT ボタンの長押しと判定する時間
 static const uint32_t LONG_PRESS_MS = 1500;
