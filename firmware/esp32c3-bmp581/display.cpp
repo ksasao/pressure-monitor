@@ -76,8 +76,8 @@ static void rememberSent(uint8_t brightness)
 //     ただし、LED_REFRESH_MS ごとに 1 回は、送り直す (乱れの自動復帰のため)
 //   - ライトスリープから復帰した直後の最初の送信だけ、念のため、同じフレームを
 //     2 回送る。CPU を 80MHz にしているので、化けることはないはずだが、
-//     (40MHz では化けた。config.h の CPU_MHZ を参照)、点灯し始めのときだけで、
-//     電力への影響はほぼない
+//     (40MHz では化けた。config.h の CPU_MHZ を参照)。点灯中も眠る
+//     (LIGHT_SLEEP_WHILE_LIT) ときは、毎フレームが対象になる (LED_RESEND_AFTER_WAKE)
 //   - force = true のときは、内容が同じでも、必ず送る (診断用の全点灯モード)
 static void showFrame(uint8_t brightness, bool force = false)
 {
@@ -88,7 +88,7 @@ static void showFrame(uint8_t brightness, bool force = false)
 
     FastLED.setBrightness(brightness);
     FastLED.show();
-    if (s_afterWake) {
+    if (s_afterWake && LED_RESEND_AFTER_WAKE) {
         FastLED.wait(5);
         delay(1);
         FastLED.show();

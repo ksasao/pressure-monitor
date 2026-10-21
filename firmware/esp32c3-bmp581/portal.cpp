@@ -63,7 +63,7 @@ static void flushSamples(uint32_t nowMs)
     s_push[5] = (uint8_t)((uint16_t)t100 >> 8);
     // 基板の中への記録の状態 (devlog.h)
     s_push[6] = (devlogRecording() ? 1 : 0) | (devlogFull() ? 2 : 0) | (devlogAvailable() ? 0 : 4);
-    s_push[7] = 0;
+    s_push[7] = (uint8_t)(devlogIntervalMs() / 1000);   // 記録の間隔 [秒]。0 = 毎サンプル (30Hz)
     put32(s_push + 8, devlogCount());
     put32(s_push + 12, devlogCapacity());
     // CSV のダウンロードの進み具合 (送ったバイト数と、全体のバイト数)
@@ -103,7 +103,19 @@ static void handleRec(AsyncWebServerRequest *req)
         const int64_t t  = req->hasParam("t", true) ? strtoll(req->getParam("t", true)->value().c_str(), nullptr, 10) : 0;
         const int32_t tz = req->hasParam("tz", true) ? (int32_t)req->getParam("tz", true)->value().toInt() : 0;
         const bool wifiOff = req->hasParam("wifi", true) && req->getParam("wifi", true)->value() == "off";
-        devlogRequestStart(t, tz, wifiOff);
+        // 役割が送信・ハブのときは、Wi-Fi をオフにしても ESP-NOW が動き続け、電池の消費が大きい。
+        // ページで「単体に切り替える」を選ぶと、solo=1 が届くので、記録を始める前に単体にする
+        // (通常モードで再起動したときから有効になる)
+        if (req->hasParam("solo", true) && req->getParam("solo", true)->value() == "1" &&
+            g_set.role != LINK_ROLE_STANDALONE) {
+            g_set.role = LINK_ROLE_STANDALONE;
+            settingsSaveRole();
+            Serial.println(F("# role -> standalone (before recording)"));
+        }
+        // 記録の間隔 (iv、ms)。0 = 毎サンプル (30Hz)、1000 = 1 秒、30000 = 30 秒。ほかの値は 0 にする
+        uint32_t iv = req->hasParam("iv", true) ? (uint32_t)req->getParam("iv", true)->value().toInt() : 0;
+        if (iv != 1000 && iv != 30000) iv = 0;
+        devlogRequestStart(t, tz, wifiOff, iv);
     } else if (op == "stop") {
         // 停止したときのスマホの時計で、記録の時刻のずれを補正する
         const int64_t t = req->hasParam("t", true) ? strtoll(req->getParam("t", true)->value().c_str(), nullptr, 10) : 0;
@@ -339,6 +351,7 @@ void portalBegin()
     s_server.on("/",       HTTP_GET,  handleRoot);
     s_server.on("/settings", HTTP_GET, handleSettings);
     s_server.on("/log.csv",  HTTP_GET, devlogHandleCsv);
+    s_server.on("/log",      HTTP_GET, devlogHandleCsv);   // /log/<ファイル名> (装置の名前を含む)
     s_server.on("/rec",      HTTP_POST, handleRec);
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);

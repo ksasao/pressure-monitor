@@ -39,6 +39,11 @@ const char *linkRoleName(uint8_t role)
     }
 }
 
+bool linkRadioOn()
+{
+    return s_role != LINK_ROLE_STANDALONE;
+}
+
 bool linkAddBroadcastPeer()
 {
     esp_now_peer_info_t peer = {};

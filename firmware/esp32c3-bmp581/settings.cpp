@@ -7,7 +7,7 @@
 #include "config.h"
 #include "link.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 400, 8, 1, 255, 0, 30, 100, 50, 0, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
+const AppSettings SETTINGS_DEFAULT = { 50, 753, 8, 1, 192, 0, 30, 100, 50, 0, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -91,6 +91,15 @@ void settingsSaveMode()
     Preferences p;
     p.begin(NVS_NAMESPACE, false);
     p.putInt("pmode", g_set.mode);
+    p.end();
+}
+
+// 記録を始める前に、単体へ切り替えるとき。設定ページで操作中の (保存していない) 値を巻き込まない
+void settingsSaveRole()
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.putInt("role", g_set.role);
     p.end();
 }
 

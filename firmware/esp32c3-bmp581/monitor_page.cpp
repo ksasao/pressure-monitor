@@ -35,11 +35,11 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #st{font-size:.8em;color:var(--sub)}
 .rc{display:flex;gap:6px;align-items:center}
 #rec.on{background:#c33;border-color:#c33;color:#fff}
-#recdlg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:10;align-items:center;justify-content:center;padding:12px}
-#recdlg.on{display:flex}
-#recdlg .box{background:var(--bg);color:var(--fg);border-radius:10px;padding:14px;max-width:420px;line-height:1.55;font-size:.92em}
-#recdlg .box button{display:block;width:100%;margin-top:8px;padding:10px;font-size:1em}
-#recdlg small{color:var(--sub);display:block;margin-top:2px}
+#recdlg,#iosdlg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:10;align-items:center;justify-content:center;padding:12px}
+#recdlg.on,#iosdlg.on{display:flex}
+#recdlg .box,#iosdlg .box{background:var(--bg);color:var(--fg);border-radius:10px;padding:14px;max-width:420px;line-height:1.55;font-size:.92em}
+#recdlg .box button,#iosdlg .box button{display:block;width:100%;margin-top:8px;padding:10px;font-size:1em}
+#recdlg small,#iosdlg small{color:var(--sub);display:block;margin-top:2px}
 /* 横向き (高さが低い) ときは、数値を小さく 1 行にして、グラフを広くする */
 @media (orientation:landscape) and (max-height:520px){
  #top{padding:4px 10px 2px;gap:4px 10px;align-items:center}
@@ -72,11 +72,37 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 <div id="bot"><span id="st">接続しています...</span>
  <span class="rc"><span id="ri" class="u"></span><button type="button" id="rec">● 記録</button>
  <a class="btn" id="dl" href="/log.csv">CSV 保存</a><button type="button" id="clr">消去</button></span></div>
+<div id="iosdlg"><div class="box">
+ <b>この画面では、CSV を保存できません</b><br>
+ iPhone の Wi-Fi のログイン画面（自動で開いた画面）には、ファイルを保存する機能がありません。
+ 記録は基板の中に残っているので、次の手順で、Safari から保存してください。
+ <ol style="margin:8px 0;padding-left:1.3em">
+  <li>右上の「キャンセル」をタップし、Wi-Fi の接続を続ける選択肢（「インターネットなしで使用」など）を選ぶ</li>
+  <li>Safari で <b id="iosurl"></b> を開く</li>
+  <li>「CSV 保存」→「ダウンロード」をタップする（「ファイル」アプリの「ダウンロード」に保存されます）</li>
+ </ol>
+ <button type="button" id="ioscopy">アドレスをコピー</button>
+ <button type="button" id="iosclose">閉じる</button>
+</div></div>
 <div id="recdlg"><div class="box">
- <b>基板の中に記録します（30Hz、最長 約 5.5 時間）</b>
+ <b>基板の中に記録します</b>
+ <label style="display:block;margin-top:6px">記録の間隔
+  <select id="reciv" style="font-size:1em;margin-left:4px">
+   <option value="0">1/30 秒（最長 約 5.5 時間）</option>
+   <option value="1000">1 秒（最長 約 39 時間）</option>
+   <option value="30000">30 秒（最長 約 48 日）</option>
+  </select></label>
+ <small>1 秒と 30 秒は、その間の平均を記録します。LED の表示は変わりません。</small>
  <div id="recold"></div>
+ <div id="recrole" style="display:none;border:1px solid #d08000;border-radius:8px;padding:8px;margin:8px 0">
+  <b>役割が「<span id="recrolename"></span>」になっています</b><br>
+  複数台の表示のための無線（ESP-NOW）が、Wi-Fi をオフにしても動き続けます。
+  ライトスリープに入らないため、電池の消費が大きくなります（単 3 電池 2 本で 5 時間ほど）。
+  <label style="display:block;margin-top:6px"><input type="checkbox" id="recsolo" checked> 記録の前に「単体」に切り替える（おすすめ）</label>
+  <small>あとで、設定ページの「役割」で戻せます。</small>
+ </div>
  <button type="button" id="recon">Wi-Fi のまま記録する</button>
- <small>このページで、グラフを見ながら記録します。</small>
+ <small>このページで、グラフを見ながら記録します（LED5 が赤と水色で点滅します）。</small>
  <button type="button" id="recoff">記録して Wi-Fi をオフにする（省電力）</button>
  <small>基板が再起動し、Wi-Fi をオフにして記録を続けます（LED5 が赤く点滅します）。
   止めるときは、BOOT ボタンを長押しして設定モードに入り、このページの「■ 停止」を押してください。</small>
@@ -101,12 +127,12 @@ function connect(){
  ws.onerror=function(){try{ws.close();}catch(x){}};
 }
 var HDR=24;        // フレームのヘッダ (monitor_page.h)
-var rec={on:false,full:false,none:false,count:0,cap:0};
+var rec={on:false,full:false,none:false,count:0,cap:0,iv:0};
 var dl={sent:0,total:0,t0:0,s0:0,lastSent:-1,lastMove:0};   // CSV のダウンロードの進み具合     // 基板の中への記録の状態 (devlog.h)
 function onFrame(b){
  var dv=new DataView(b);if(dv.byteLength<HDR||dv.getUint8(0)!==77||dv.getUint8(1)!==3)return;
  var n=dv.getUint8(2);mode=dv.getUint8(3);temp=dv.getInt16(4,true)/100;
- var f=dv.getUint8(6);rec.on=!!(f&1);rec.full=!!(f&2);rec.none=!!(f&4);rec.count=dv.getUint32(8,true);rec.cap=dv.getUint32(12,true);
+ var f=dv.getUint8(6);rec.on=!!(f&1);rec.full=!!(f&2);rec.none=!!(f&4);rec.count=dv.getUint32(8,true);rec.cap=dv.getUint32(12,true);rec.iv=dv.getUint8(7);
  dlUpdate(dv.getUint32(16,true),dv.getUint32(20,true));
  n=Math.min(n,Math.floor((dv.byteLength-HDR)/16));if(n<1)return;
  for(var i=0;i<n;i++){var o=HDR+i*16;
@@ -116,6 +142,15 @@ function onFrame(b){
  if(buf.length>MAXN)buf.splice(0,buf.length-MAXN);
  last=Date.now();dirty=true;
 }
+
+// ---- 装置の名前 (/status。下の行と、ブラウザのタブに出す。CSV のファイル名にも使う)
+var devName='';
+function loadName(){
+ fetch('/status').then(function(r){return r.json();}).then(function(j){
+  devName=j.node||'';document.title=(devName?devName+' - ':'')+'pressure-monitor';
+ }).catch(function(){setTimeout(loadName,3000);});
+}
+loadName();
 
 // ---- 数値 (1 秒に 5 回。ちらつかないよう、直近の数サンプルを平均する)
 function avg(k,f){var s=0,m=Math.min(k,buf.length);for(var i=buf.length-m;i<buf.length;i++)s+=f(buf[i]);return m?s/m:0;}
@@ -128,7 +163,7 @@ function upd(){
  document.getElementById('dp').textContent=(dp>=0?'+':'')+dp.toFixed(2);
  // 1 Pa ≒ 8.5 cm。気圧が上がる (+) のは、低くなったとき
  var cm=-dp*8.5;document.getElementById('dh').textContent='(高さ換算 '+(cm>=0?'+':'')+cm.toFixed(0)+' cm)';
- st.textContent='温度 '+temp.toFixed(1)+' ℃ / モード '+(mode+1)+' '+(MODES[mode]||'');
+ st.textContent=(devName?devName+' / ':'')+temp.toFixed(1)+' ℃ / モード '+(mode+1)+' '+(MODES[mode]||'');
 }
 setInterval(upd,200);
 
@@ -197,7 +232,9 @@ function post(q){return fetch('/rec',{method:'POST',headers:{'Content-Type':'app
  .then(function(r){if(r.ok)return true;return r.text().then(function(t){alert(t||('エラー '+r.status));return false;});})
  .catch(function(){alert('基板に送れませんでした。もう一度押してください。');return false;});}
 var recBtn=document.getElementById('rec'),dlA=document.getElementById('dl');
-function fmtMin(n){return Math.floor(n/30/60)+' 分';}
+// 残りの行数を、時間にする (記録の間隔 rec.iv 秒。0 = 毎サンプル 30Hz)
+function fmtRest(n){var s=n*(rec.iv||1/30);
+ if(s<5400)return Math.floor(s/60)+' 分';if(s<172800)return Math.floor(s/3600)+' 時間';return Math.floor(s/86400)+' 日';}
 function mb(b){return (b/1048576).toFixed(1);}
 // 基板が送ったバイト数から、進み具合と残り時間を求める
 function dlUpdate(sent,total){
@@ -218,7 +255,7 @@ function dlText(){
 function recUi(){
  recBtn.textContent=rec.on?'■ 停止':'● 記録';recBtn.className=rec.on?'on':'';
  var t=rec.count.toLocaleString()+' 行';
- if(rec.on)t='記録中 '+t+'（残り約 '+fmtMin(rec.cap-rec.count)+'）';
+ if(rec.on)t='記録中 '+t+'（残り約 '+fmtRest(rec.cap-rec.count)+'）';
  else if(rec.full)t='いっぱいで停止 '+t;
  if(rec.none)t='記録できません（記録の領域がありません）';
  var d=dlText();if(d)t=d;
@@ -230,13 +267,29 @@ recBtn.onclick=function(){
  if(rec.on){post('op=stop&t='+Date.now());return;}
  document.getElementById('recold').textContent=rec.count>0
   ?'前の記録（'+rec.count.toLocaleString()+' 行）は消えます。必要なら、先に「CSV 保存」を押してください。':'';
- dlg.className='on';
+ // 無線の役割を調べる。送信・ハブのままだと、Wi-Fi をオフにしても ESP-NOW が動き続け、
+ // 電池の消費が大きいので、単体に切り替えるかを、ダイアログで確かめる
+ fetch('/status').then(function(r){return r.json();}).then(function(j){showRecDlg(j.role);})
+  .catch(function(){showRecDlg('');});
 };
+var ROLE_NAMES={sender:'送信',hub:'ハブ'};
+function showRecDlg(role){
+ try{var v=localStorage.getItem('recIv');if(v)document.getElementById('reciv').value=v;}catch(e){}
+ var warn=!!ROLE_NAMES[role];
+ document.getElementById('recrole').style.display=warn?'block':'none';
+ document.getElementById('recrolename').textContent=ROLE_NAMES[role]||'';
+ document.getElementById('recsolo').checked=true;
+ dlg.className='on';
+}
 function startRec(wifiOff){
  dlg.className='';
- post('op=start&t='+Date.now()+'&tz='+new Date().getTimezoneOffset()+'&wifi='+(wifiOff?'off':'on')).then(function(ok){
+ var solo=document.getElementById('recrole').style.display!=='none'&&document.getElementById('recsolo').checked;
+ var iv=document.getElementById('reciv').value;
+ try{localStorage.setItem('recIv',iv);}catch(e){}
+ post('op=start&t='+Date.now()+'&tz='+new Date().getTimezoneOffset()+'&wifi='+(wifiOff?'off':'on')+'&iv='+iv+(solo?'&solo=1':'')).then(function(ok){
   if(!ok)return;
   if(wifiOff){alert('記録を始めました。基板は再起動して、Wi-Fi をオフにして記録を続けます（LED5 が赤く点滅します）。'
+   +(solo?'役割は「単体」に切り替えました。':'')
    +'止めるときは、BOOT ボタンを長押しして設定モードに入り、このページの「■ 停止」を押してください。');return;}
   // 基板が記録を始めたかを、少し待ってから確かめる
   setTimeout(function(){if(!rec.on)alert('記録が始まっていないようです。もう一度「● 記録」を押してください。');},3000);
@@ -246,15 +299,32 @@ document.getElementById('recon').onclick=function(){startRec(false);};
 document.getElementById('recoff').onclick=function(){startRec(true);};
 document.getElementById('reccancel').onclick=function(){dlg.className='';};
 // CSV は、基板からダウンロードする。ファイル名は、押した日時
+// iPhone の Wi-Fi のログイン画面 (Safari ではない画面) は、ファイルを保存できない。
+// Safari の User-Agent には "Safari/" が入るが、ログイン画面には入らないので、それで見分ける
+var ua=navigator.userAgent;
+var isIOS=/iPhone|iPad|iPod/.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+var isIOSCaptive=isIOS&&!/Safari\//.test(ua);
+var iosdlg=document.getElementById('iosdlg'),pageUrl='http://'+location.host+'/';
+document.getElementById('iosurl').textContent=pageUrl;
+document.getElementById('iosclose').onclick=function(){iosdlg.className='';};
+document.getElementById('ioscopy').onclick=function(){
+ var t=document.createElement('textarea');t.value=pageUrl;document.body.appendChild(t);t.select();
+ var ok=false;try{ok=document.execCommand('copy');}catch(e){}t.remove();
+ this.textContent=ok?'コピーしました':'コピーできませんでした';};
 dlA.onclick=function(){
  if(rec.count===0){alert('記録がありません。');return false;}
- // 大きいときは、時間がかかることを先に知らせる (1 行 83 バイト)
- var size=rec.count*83;
+ if(isIOSCaptive){iosdlg.className='on';return false;}
+ // 大きいときは、時間がかかることを先に知らせる (1 行 88 バイト)
+ var size=rec.count*88;
  if(size>5*1048576&&!confirm('CSV は約 '+mb(size)+' MB です。保存先を選んだあと、数分かかります。'
   +'進み具合は、この画面の下と、スマホの通知に表示されます。保存が終わるまで、このページを閉じないでください。'))return false;
  var d=new Date();
- dlA.href='/log.csv?name=pressure-monitor-'+d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
+ var fn='pressure-monitor_'+(devName?devName.replace(/[\\\/:*?"<>|\s]/g,'_')+'_':'')
+  +d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
   +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';
+ dlA.href='/log/'+encodeURIComponent(fn);
+ // download を付けると、iPhone の Safari では、表として開かずに、ダウンロードの確認が出る
+ dlA.setAttribute('download',fn);
  return true;
 };
 document.getElementById('clr').onclick=function(){

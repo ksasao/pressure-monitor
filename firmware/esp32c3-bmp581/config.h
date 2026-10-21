@@ -47,7 +47,7 @@ static const uint32_t BOOT_WHITE_MS = 500;
 // 点灯し始めに、最後の LED (LED4、LED5) が、一瞬緑になりました。
 // (待つ時間や、送信の回数を増やしても直らず、80MHz にすると直ることを、実機で確認済み)
 // 眠っている間の電流は、CPU クロックに依存しないので、80MHz でも、全消灯のときの
-// 平均電流は、ほぼ変わりません。LED が点灯している間 (眠らない) は、約 4mA 増えます。
+// 平均電流は、ほぼ変わりません。
 // 80MHz 未満では APB クロックも CPU に連動して下がります。
 static const uint32_t CPU_MHZ = 80;
 
@@ -80,18 +80,30 @@ static const uint32_t USB_PROBE_WINDOW_MS   = 400;
 static const uint32_t LIGHT_SLEEP_MIN_MS         = 3;
 static const uint32_t LIGHT_SLEEP_WAKE_MARGIN_US = 1000;
 
+// LED が点灯している間も、ティックの待ち時間に眠る。
+// WS2812B は、データを受け取ったあとは、マイコンが眠っても色を保つので、
+// 起きてセンサを読み、LED へ送ったら、次のティックまで眠れる。
+// 風の強い日など、LED が点灯している時間が長いときの電池の持ちが、大きく延びる
+// (起きている時間が 33ms から数 ms になる)。
+// false にすると、以前と同じく、点灯している間は眠らない (LED の乱れが出たときの確認用)
+static const bool LIGHT_SLEEP_WHILE_LIT = true;
+
 // LED の乱れの対策 (点灯し始めに、最後の LED が、一瞬緑になる症状)。
 // 原因は、CPU が遅い (40MHz) と、ライトスリープから復帰した直後に、LED への
 // データの補充が間に合わず、データが化けることです (CPU_MHZ の説明を参照)。
 // 次の対策を入れています (display.h)。
 //   - CPU クロックを 80MHz にする
 //   - 全消灯で、前回と同じ内容なら、LED へ送らない (送信がなければ、化けない)
-//   - LED が点灯している間は、眠らない
-//   - 眠った後の、最初の送信だけ、念のため、同じフレームを 2 回送る
+//   - 眠った後の、最初の送信だけ、念のため、同じフレームを 2 回送る (LED_RESEND_AFTER_WAKE)
+//   - LIGHT_SLEEP_WHILE_LIT を false にすると、点灯している間は眠らない (以前の動作)
 //
+// LED_RESEND_AFTER_WAKE : 眠った後の最初の送信を、2 回送る。点灯中も眠る場合は、毎フレームが
+//                      「眠った後」になるので、起きている時間が約 1.5ms 延びる。
+//                      80MHz で乱れが出ないことを確かめたら、false にすると、さらに省電力になる
 // LED_SKIP_UNCHANGED : 内容が前回と同じなら、LED へ送らない
 // LED_REFRESH_MS     : 内容が変わらなくても、この間隔で 1 回は送り直す (LED の表示が
 //                      乱れたときに、自動で戻すため)。0 = 送り直さない
+static const bool     LED_RESEND_AFTER_WAKE = true;
 static const bool     LED_SKIP_UNCHANGED = true;
 static const uint32_t LED_REFRESH_MS     = 30000;
 
@@ -106,13 +118,20 @@ static const uint32_t BATTERY_PRESENT_MV  = 1000;    // これ未満は電池な
 // ------------------------------------------------------------- recording
 // 基板の中への記録 (devlog.h) の状態を、LED5 の点滅で知らせる。
 //   記録中             : USB_PROBE_INTERVAL_MS (5 秒) ごとに、赤で REC_BLINK_MS だけ 1 回点灯
+//   記録中 (無線あり)  : 同じ間隔で、前半を赤、後半を水色で、REC_BLINK_RADIO_MS だけ点灯。
+//                        設定モード (Wi-Fi) や、役割が送信・ハブ (ESP-NOW) のとき。
+//                        電池の消費が大きい状態であることを知らせる
 //   いっぱいで止まった : 同じ間隔で、黄色で 2 回点灯 (記録を消去するか、新しく始めるまで)
 // 点灯するのは、USB の検出窓 (眠らずに起きている USB_PROBE_WINDOW_MS) の中なので、
 // ライトスリープの時間を減らさない (2 回の点滅は 3 x REC_BLINK_MS で、窓に収まる)。
 // 明るさは、LED の明るさの最大値の設定 (brightness) が掛かる
 static const uint32_t REC_BLINK_MS = 100;
 static_assert(3 * REC_BLINK_MS <= USB_PROBE_WINDOW_MS, "blink must fit in the USB probe window");
+// 無線を使っている間は、ライトスリープに入らないので、検出窓に合わせなくてよい。
+// 赤と水色を見分けられるように、それぞれ REC_BLINK_MS (LED の更新 3 回分) にする
+static const uint32_t REC_BLINK_RADIO_MS = 2 * REC_BLINK_MS;
 #define REC_COLOR_RECORDING CRGB(80, 0, 0)     // 赤
+#define REC_COLOR_RADIO     CRGB(0, 40, 80)    // 水色 (無線ありの記録中の後半)
 #define REC_COLOR_FULL      CRGB(80, 45, 0)    // 黄色 (WS2812B は緑が強いので、緑を控えめに)
 
 // ------------------------------------------------------------ BOOT button

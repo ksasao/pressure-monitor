@@ -240,7 +240,8 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
 
     // 設定モードの表示ページへ (設定モードでなければ何もしない)
     portalPushSample(nowMs, s.raw, hpf, color.r, color.g, color.b);
-    devlogPush(s.raw, p.hpfShift, s.tempC);   // 基板の中への記録 (記録中だけ。変化量は記録しない)
+    devlogPush(s.raw, p.hpfShift, s.tempC,  // 基板の中への記録 (記録中だけ)
+               batteryLastMilliVolts(), hpf);
 
     if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
 }
@@ -381,12 +382,17 @@ void loop()
         // 記録の状態は、LED5 の点滅で知らせる。USB の検出窓 (USB_PROBE_INTERVAL_MS ごとに、
         // 眠らずに起きている USB_PROBE_WINDOW_MS) の中で点滅するので、ライトスリープの時間を減らさない
         //   記録中             : 赤で 1 回 (0〜REC_BLINK_MS)
+        //   記録中 (無線あり)  : 前半を赤、後半を水色 (0〜REC_BLINK_RADIO_MS)
         //   いっぱいで止まった : 黄色で 2 回 (0〜REC_BLINK_MS と、2〜3 x REC_BLINK_MS)。
         //                        記録を消去するか、新しく記録を始めるまで続ける
         const uint32_t phase = now % USB_PROBE_INTERVAL_MS;
         bool blink = false;
         CRGB blinkColor;
-        if (devlogRecording()) {
+        if (devlogRecording() && (bootIsSettingsMode() || linkRadioOn())) {
+            // 無線あり (Wi-Fi・ESP-NOW): 前半を赤、後半を水色
+            blink      = phase < REC_BLINK_RADIO_MS;
+            blinkColor = phase < REC_BLINK_RADIO_MS / 2 ? REC_COLOR_RECORDING : REC_COLOR_RADIO;
+        } else if (devlogRecording()) {
             blink      = phase < REC_BLINK_MS;
             blinkColor = REC_COLOR_RECORDING;
         } else if (devlogFull()) {

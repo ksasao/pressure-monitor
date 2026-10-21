@@ -17,7 +17,7 @@
  *   4  tempCx100 温度 [0.01 ℃] (int16)
  *   6  recFlags  基板の中への記録 (devlog.h)。bit0 = 記録中、bit1 = いっぱいで止まった、
  *                bit2 = 記録の領域がない (記録できない)
- *   7  reserved  0
+ *   7  recIntv   記録の間隔 [秒]。0 = 毎サンプル (30Hz)、1、30 (その間の平均)
  *   8  recCount  記録したサンプル数 (uint32)
  *  12  recCap    記録できるサンプル数 (uint32)
  *  16  dlSent    CSV のダウンロードで、送ったバイト数 (uint32)

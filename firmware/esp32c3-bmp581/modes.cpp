@@ -4,9 +4,10 @@
 #include "settings.h"
 
 // 標準: 細かい動き向け。1 Pa ≒ 8.5 cm
-//   不感帯 50 ≒ 0.78 Pa ≒ 6.6 cm、白になるのは 400 ≒ 6.25 Pa ≒ 53 cm、
+//   不感帯 50 ≒ 0.78 Pa ≒ 6.6 cm、白になるのは 753 ≒ 11.8 Pa ≒ 100 cm
+//   (100 cm / 8.5 cm/Pa x 64 = 753)、
 //   時定数は約 8.5 秒 (30Hz)
-static const SenseParams SENSE_STANDARD = { 50, 400, 8, 1 };
+static const SenseParams SENSE_STANDARD = { 50, 753, 8, 1 };
 
 // ドライブ: 車や電車での移動向け。白になるのは 15000 ≒ 234 Pa ≒ 20 m。
 // 不感帯は標準と同じ 50、時定数は 2^9 サンプル ≒ 17 秒 (ゆっくりした変化まで拾う)

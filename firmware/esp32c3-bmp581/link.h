@@ -100,6 +100,9 @@ extern const uint8_t LINK_BROADCAST_ADDR[6];
 
 const char *linkRoleName(uint8_t role);
 
+// 通常モードで、無線 (ESP-NOW) を使っているか (役割が送信・ハブ)。設定モードでは false
+bool linkRadioOn();
+
 // 役割 (g_set.role) に合わせて、無線を起動する。設定モードでは呼ばない。
 // 単体なら何もしない
 void linkBegin();

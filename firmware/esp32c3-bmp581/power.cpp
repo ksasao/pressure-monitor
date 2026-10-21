@@ -29,7 +29,7 @@ static bool canSleep(uint32_t nowMs)
     if (nowMs < LIGHT_SLEEP_BOOT_DELAY_MS)  return false;   // 起動の直後
     if ((nowMs - s_lastHostSeenMs) < USB_UNPLUGGED_HOLD_MS) return false;   // USB が見えている
     if ((nowMs % USB_PROBE_INTERVAL_MS) < USB_PROBE_WINDOW_MS) return false;   // 検出窓
-    if (!displayIsDark())                   return false;   // LED が点灯している間は眠らない
+    if (!LIGHT_SLEEP_WHILE_LIT && !displayIsDark()) return false;   // 点灯中は眠らない (以前の動作)
     return true;
 }
 

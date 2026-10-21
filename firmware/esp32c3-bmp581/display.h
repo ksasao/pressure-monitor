@@ -26,7 +26,7 @@ void displayFill(const CRGB &c);           // 全 LED を単色にする (長押
 void displayWait();
 
 // LED が全て消えていて、履歴にも色が残っていないか。ライトスリープに入ってよい条件の 1 つ。
-// 点灯している間は眠らない (起きたままなら、LED への送信は乱れない)
+// LIGHT_SLEEP_WHILE_LIT が false のときは、点灯している間は眠らない (起きたままなら、LED への送信は乱れない)
 bool displayIsDark();
 
 // ライトスリープから復帰したことを知らせる。復帰してから、最初に LED へ送るときだけ、
