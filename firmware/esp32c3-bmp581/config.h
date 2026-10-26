@@ -228,6 +228,27 @@ static const uint8_t HUB_MAX_CLIENTS = 4;            // 同時に表示できる
 // ハブがスマホへデータを送る間隔 [ms]
 static const uint32_t HUB_PUSH_INTERVAL_MS = 100;
 
+// ----------------------------------------------------------------- sound
+// Modulino Buzzer (Qwiic) の音 (sound.h)。
+// 不感帯の外にいる間は、コード進行のアルペジオを鳴らし続け、不感帯では無音にする。
+// SOUND_WARMUP_MS         : 起動してから、この時間は鳴らさない (フィルタが落ち着くまで)
+// SOUND_BURST_DELTA       : 変化量の絶対値 (deltaLevel、0〜1000) が、SOUND_BURST_TICKS の間に
+//                           これ以上増えたら「瞬間的な変化」とみなし、速い駆け上がりを鳴らす
+// SOUND_BURST_GAP_MS      : 駆け上がりを、続けて鳴らさない時間
+// SOUND_RESET_MS          : 無音がこの時間続いたら、次はコード進行の最初 (主和音) から鳴らす。
+//                           これより短い無音では、続きのコードから鳴らす (弱い変化が何度も
+//                           続くときに、同じ音ばかりにならないように)
+// SOUND_BASE_LOW / _HIGH  : 基準の音の高さ (MIDI の音番号)。変化量の絶対値が 0 で LOW、
+//                           1000 (白) で HIGH。小節の始まりに、コードの音に合わせて決める。
+//                           圧電ブザーは低い音ほど小さいので、変化が小さいと、音も小さく聞こえる
+static const uint32_t SOUND_WARMUP_MS     = 3000;
+static const int32_t  SOUND_BURST_DELTA   = 250;
+static const uint8_t  SOUND_BURST_TICKS   = 10;      // 約 0.33 秒
+static const uint32_t SOUND_BURST_GAP_MS  = 800;
+static const uint32_t SOUND_RESET_MS      = 4000;
+static const int      SOUND_BASE_LOW      = 74;      // D5 (587 Hz)
+static const int      SOUND_BASE_HIGH     = 88;      // E6 (1319 Hz)
+
 // ---------------------------------------------------------------- display
 // パレットの点数。(deltaRange - deltaLimit) をこの数 - 1 で割って区間にします
 static const int32_t PALETTE_STEPS = 4;

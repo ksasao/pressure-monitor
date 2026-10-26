@@ -21,6 +21,7 @@ struct DeviceStatus {
     const char *modeName;       // 今の表示モードの名前
     const char *roleName;       // 保存されている役割 (再起動すると有効)
     String      nodeName;       // 装置の名前
+    bool        buzzer;         // Modulino Buzzer がつながっている (sound.h)
 };
 
 // 設定ページ。現在の設定を埋め込む。saved = true なら「保存しました」を出す。

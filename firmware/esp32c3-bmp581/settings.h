@@ -32,12 +32,34 @@
 //                  再起動すると有効になる
 //   nodeName       装置の名前 (UTF-8 で NODE_NAME_MAX バイトまで)。ハブの画面や記録で、装置を
 //                  見分けるのに使う。空なら "ps-" + MAC アドレスの下 6 桁 (settingsNodeName())
+//   sound          Modulino Buzzer (Qwiic) の音色。0 = 鳴らさない、1 = キラキラ、2 = さわやか (sound.h)。
+//                  初期値はキラキラ。Modulino Buzzer をつないでいなければ、何もしない
+//   soundPitch     音の高さ。0 = 高い (+1 オクターブ)、1 = 標準、2 = 低い (-1 オクターブ)、
+//                  3 = とても低い (-2 オクターブ)。圧電ブザーは約 4kHz で最も大きく、低い音ほど
+//                  小さく鳴るので、音の高さを変えると、音量も変わる (高いほど大きい)
 //   wifiSsid, wifiPass  [ハブ] 接続する Wi-Fi (ルーター)。SSID が空なら、ハブが自分で
 //                  アクセスポイントになる (hub.h)
 //
 // 感度は、ログの hpf 列を見て調整してください。
 // 静止時の hpf の振れ幅より deltaLimit が小さいと、暗い色がちらつきます
 static const size_t NODE_NAME_MAX = 16;
+
+// 音色 (sound)
+enum SoundKind : int32_t {
+    SOUND_OFF     = 0,
+    SOUND_SPARKLE = 1,      // キラキラ
+    SOUND_FRESH   = 2,      // さわやか
+    SOUND_COUNT
+};
+
+// 音の高さ (soundPitch)
+enum SoundPitch : int32_t {
+    SOUND_PITCH_HIGH   = 0,     // 高い (+1 オクターブ。最も大きい)
+    SOUND_PITCH_NORMAL = 1,     // 標準
+    SOUND_PITCH_LOW    = 2,     // 低い (-1 オクターブ)
+    SOUND_PITCH_LOWER  = 3,     // とても低い (-2 オクターブ。最も小さい)
+    SOUND_PITCH_COUNT
+};
 
 struct AppSettings {
     int32_t deltaLimit;
@@ -53,6 +75,8 @@ struct AppSettings {
     int32_t role;
     int32_t group;
     int32_t hubChannel;
+    int32_t sound;
+    int32_t soundPitch;
     char    nodeName[NODE_NAME_MAX + 1];
     char    wifiSsid[33];
     char    wifiPass[65];

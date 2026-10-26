@@ -7,7 +7,7 @@
 #include "config.h"
 #include "link.h"
 
-const AppSettings SETTINGS_DEFAULT = { 50, 753, 8, 1, 192, 0, 30, 100, 50, 0, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, "", "", "" };
+const AppSettings SETTINGS_DEFAULT = { 50, 753, 8, 1, 192, 0, 30, 100, 50, 0, 0, LINK_GROUP_DEFAULT, LINK_CHANNEL, SOUND_SPARKLE, SOUND_PITCH_NORMAL, "", "", "" };
 AppSettings g_set = SETTINGS_DEFAULT;
 
 static const char *NVS_NAMESPACE = "pmon";
@@ -35,6 +35,8 @@ void settingsClamp()
     g_set.valMod         = clampI(g_set.valMod, 0, 100);
     g_set.role           = clampI(g_set.role, 0, LINK_ROLE_COUNT - 1);
     g_set.group          = clampI(g_set.group, 1, 255);
+    g_set.sound          = clampI(g_set.sound, 0, SOUND_COUNT - 1);
+    g_set.soundPitch     = clampI(g_set.soundPitch, 0, SOUND_PITCH_COUNT - 1);
     g_set.hubChannel     = clampI(g_set.hubChannel, 1, 13);
 }
 
@@ -55,6 +57,8 @@ void settingsLoad()
     g_set.role           = p.getInt("role",   SETTINGS_DEFAULT.role);
     g_set.group          = p.getInt("group",  SETTINGS_DEFAULT.group);
     g_set.hubChannel     = p.getInt("hubch",  SETTINGS_DEFAULT.hubChannel);
+    g_set.sound          = p.getInt("sound",  SETTINGS_DEFAULT.sound);
+    g_set.soundPitch     = p.getInt("spitch", SETTINGS_DEFAULT.soundPitch);
     p.getString("nname", g_set.nodeName, sizeof(g_set.nodeName));
     p.getString("wssid", g_set.wifiSsid, sizeof(g_set.wifiSsid));
     p.getString("wpass", g_set.wifiPass, sizeof(g_set.wifiPass));
@@ -79,6 +83,8 @@ void settingsSave()
     p.putInt("role",  g_set.role);
     p.putInt("group", g_set.group);
     p.putInt("hubch", g_set.hubChannel);
+    p.putInt("sound", g_set.sound);
+    p.putInt("spitch", g_set.soundPitch);
     p.putString("nname", g_set.nodeName);
     p.putString("wssid", g_set.wifiSsid);
     p.putString("wpass", g_set.wifiPass);

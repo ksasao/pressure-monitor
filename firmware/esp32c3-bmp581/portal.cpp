@@ -15,6 +15,7 @@
 #include "boot.h"
 #include "modes.h"
 #include "link.h"
+#include "sound.h"
 
 static AsyncWebServer s_server(80);
 static DNSServer      s_dns;
@@ -80,9 +81,81 @@ static void flushSamples(uint32_t nowMs)
 
 // ---------------------------------------------------------------- handlers
 
+// ---- iPhone の「ログイン完了」の扱い
+// iPhone の Wi-Fi のログイン画面 (自動で開く画面) は、ファイルを保存できない。キャンセルで閉じると、
+// iPhone が Wi-Fi の接続をやめてしまうことがあり、Safari や Chrome で開き直せない。
+// そこで、表示ページの「接続を完了して、ブラウザで保存する」(/auth) を押した iPhone だけ、
+// ネットにつながるかの確認 (captive.apple.com/hotspot-detect.html など) に「Success」と答える。
+// iPhone は、ログインが済んだと判断して、ログイン画面の右上を「完了」にする。「完了」で閉じると、
+// Wi-Fi はつながったままなので、ふだんのブラウザで http://192.168.4.1/ を開いて保存できる。
+// Android など、ボタンを押していない端末の動きは変わらない (今までどおり、ログイン画面のまま)
+static const uint8_t AUTH_MAX = 4;
+static uint32_t s_authIps[AUTH_MAX];        // ログイン済みの端末の IP アドレス
+static uint8_t  s_authCount = 0;
+
+static bool isAuthorized(const IPAddress &ip)
+{
+    const uint32_t v = (uint32_t)ip;
+    for (uint8_t i = 0; i < s_authCount; i++) if (s_authIps[i] == v) return true;
+    return false;
+}
+
+static void authorize(const IPAddress &ip)
+{
+    if (isAuthorized(ip)) return;
+    if (s_authCount < AUTH_MAX) s_authIps[s_authCount++] = (uint32_t)ip;
+    else {                                  // いっぱいなら、古い方から入れ替える
+        memmove(s_authIps, s_authIps + 1, sizeof(s_authIps[0]) * (AUTH_MAX - 1));
+        s_authIps[AUTH_MAX - 1] = (uint32_t)ip;
+    }
+}
+
+// iPhone (Apple) の、ネットにつながるかの確認か
+static bool isAppleProbe(AsyncWebServerRequest *req)
+{
+    const String host = req->host();
+    const String url  = req->url();
+    if (url.indexOf("hotspot-detect") >= 0 || url.indexOf("library/test/success") >= 0) return true;
+    static const char *const HOSTS[] = {
+        "apple.com", "appleiphonecell.com", "itools.info", "ibook.info", "airport.us", "thinkdifferent.us",
+    };
+    for (const char *h : HOSTS) if (host.endsWith(h)) return true;
+    return false;
+}
+
+// ログイン済みの iPhone の確認に、つながっていると答える。答えたら true
+static bool answerProbe(AsyncWebServerRequest *req)
+{
+    if (!isAppleProbe(req) || !isAuthorized(req->client()->remoteIP())) return false;
+    req->send(200, "text/html",
+              "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+    return true;
+}
+
+// 「接続を完了して、ブラウザで保存する」(表示ページ、iPhone のログイン画面のとき。/auth を開く)
+static void handleAuth(AsyncWebServerRequest *req)
+{
+    s_lastActivityMs = millis();
+    const IPAddress ip = req->client()->remoteIP();
+    authorize(ip);
+    Serial.printf("# portal: %s marked as logged in (iPhone)\n", ip.toString().c_str());
+    req->send(200, "text/html; charset=utf-8", (const uint8_t *)AUTH_DONE_HTML, strlen(AUTH_DONE_HTML));
+}
+
+// 表示ページの「Wi-Fi を切る」: 設定モードを終了して、通常モード (Wi-Fi オフ) で再起動する。
+// 記録中なら、再起動のあとも続きから記録する (devlog.h)
+static void handleExit(AsyncWebServerRequest *req)
+{
+    Serial.println(F("# monitor page: Wi-Fi off (exit settings mode)"));
+    req->send(204);
+    s_restartPending = true;
+    s_restartAtMs    = millis() + 800;     // 応答を送りきってから再起動する
+}
+
 // 最初に開くページ: 気圧の表示 (monitor_page.h)
 static void handleRoot(AsyncWebServerRequest *req)
 {
+    if (answerProbe(req)) return;
     s_lastActivityMs = millis();
     req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML, strlen(MONITOR_PAGE_HTML));
 }
@@ -153,6 +226,7 @@ static void handleStatus(AsyncWebServerRequest *req)
     st.modeName   = modeName((uint8_t)g_set.mode);
     st.roleName   = linkRoleName((uint8_t)g_set.role);
     st.nodeName   = settingsNodeName();
+    st.buzzer     = soundAvailable();
     req->send(200, "application/json", buildStatusJson(st));
 }
 
@@ -178,6 +252,8 @@ static void handleSave(AsyncWebServerRequest *req)
     postInt(req, "role",  g_set.role);
     postInt(req, "group", g_set.group);
     postInt(req, "hubch", g_set.hubChannel);
+    postInt(req, "sound", g_set.sound);
+    postInt(req, "spitch", g_set.soundPitch);
 
     // 装置の名前。空欄なら、初期値 (ps-XXXXXX) を使う
     if (req->hasParam("nname", true)) {
@@ -250,6 +326,14 @@ static void setLiveValue(const String &key, int32_t v)
     else if (key == "val")    g_set.val            = v;
     else if (key == "vmod")   g_set.valMod         = v;
     else if (key == "mode")   g_set.mode           = v - 1;
+    else if (key == "sound") {
+        // 音色を変えたら、試しに鳴らす (鳴らすのは loop() の中。I2C を同じタスクで使うため)
+        if (v != g_set.sound) { g_set.sound = v; soundRequestPreview(); }
+    }
+    else if (key == "spitch") {
+        // 音の高さを変えたときも、試しに鳴らす
+        if (v != g_set.soundPitch) { g_set.soundPitch = v; soundRequestPreview(); }
+    }
 }
 
 // 反映のあとの後始末 (範囲を整える。モードが変わったら保存する)
@@ -322,6 +406,7 @@ static void handleReset(AsyncWebServerRequest *req)
 static void handleNotFound(AsyncWebServerRequest *req)
 {
     Serial.printf("# http (portal) %s%s\n", req->host().c_str(), req->url().c_str());
+    if (answerProbe(req)) return;
 
     if (PORTAL_DIRECT_HTML) {
         req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML,
@@ -353,6 +438,8 @@ void portalBegin()
     s_server.on("/log.csv",  HTTP_GET, devlogHandleCsv);
     s_server.on("/log",      HTTP_GET, devlogHandleCsv);   // /log/<ファイル名> (装置の名前を含む)
     s_server.on("/rec",      HTTP_POST, handleRec);
+    s_server.on("/exit",     HTTP_POST, handleExit);
+    s_server.on("/auth",     HTTP_GET,  handleAuth);   // ページの移動で開く (iPhone のログイン画面)
     s_server.on("/status", HTTP_GET,  handleStatus);
     s_server.on("/save",   HTTP_POST, handleSave);
     s_server.on("/live",   HTTP_POST, handleLive);

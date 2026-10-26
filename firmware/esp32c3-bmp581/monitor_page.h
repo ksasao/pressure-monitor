@@ -32,3 +32,7 @@
 #pragma once
 
 extern const char MONITOR_PAGE_HTML[];
+
+// iPhone のログイン画面で「接続を完了して、ブラウザで保存する」を押したあとのページ (portal.cpp の /auth)。
+// 右上の「完了」で閉じて、ブラウザで開き直す手順を表示する
+extern const char AUTH_DONE_HTML[];

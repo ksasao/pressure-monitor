@@ -102,6 +102,7 @@ function upd(){fetch('/status').then(function(r){return r.json();}).then(functio
  +'気圧: '+j.hpa.toFixed(2)+' hPa / 温度: '+j.temp_c.toFixed(1)+' ℃<br>'
  +'接続中の端末: '+j.stations+' 台 / 空きメモリ: '+j.heap+' B<br>'
  +'前回の再起動理由: '+j.reset+' / ブラウンアウト: '+j.brownouts+' 回<br>'
+ +'Modulino Buzzer: '+(j.buzzer?'あり':'なし')+'<br>'
  +'ファームウェア: '+esc(j.fw);
  document.getElementById('st').innerHTML=s;mark(j.mode_no);}).catch(function(){});}
 function mark(n){var b=document.querySelectorAll('.mb button');
@@ -148,6 +149,43 @@ setInterval(upd,1000);upd();
              "明度に足します。気圧が上がると明るく、下がると暗くなります。"
              "結果は 0〜100 % に収めます。変化は、1 標準と同じく、5 個の LED に履歴として流れます。"
              "例: 明度 50、反映量 50 なら、静かなときは 50 %、上がると最大 100 %、下がると最小 0 %");
+
+    // 音 (Modulino Buzzer)。選ぶと、すぐに試しに鳴らす (保存するまでの間だけ有効)
+    h += F("<h2>音 (Modulino Buzzer)</h2>"
+           "<small>Qwiic コネクタに Arduino Modulino Buzzer をつなぐと、LED の色 (気圧の変化) に合わせて、"
+           "コード進行のアルペジオを鳴らします。つないでいなければ、何もしません。</small>"
+           "<label>音色</label><select name=\"sound\" id=\"sound\" onchange=\"live()\">");
+    static const char *const SOUND_LABELS[SOUND_COUNT] = {
+        "鳴らさない",
+        "キラキラ (速い上がり下がりのアルペジオ)",
+        "さわやか (ゆったりした分散和音)",
+    };
+    for (int i = 0; i < SOUND_COUNT; i++) {
+        h += F("<option value=\"");
+        h += String(i);
+        h += (g_set.sound == i) ? F("\" selected>") : F("\">");
+        h += SOUND_LABELS[i];
+        h += F("</option>");
+    }
+    h += F("</select><label>音の高さ</label><select name=\"spitch\" id=\"spitch\" onchange=\"live()\">");
+    static const char *const PITCH_LABELS[SOUND_PITCH_COUNT] = {
+        "高い (1 オクターブ上。音が大きい)",
+        "標準",
+        "低い (1 オクターブ下。音が小さい)",
+        "とても低い (2 オクターブ下。音がとても小さい)",
+    };
+    for (int i = 0; i < SOUND_PITCH_COUNT; i++) {
+        h += F("<option value=\"");
+        h += String(i);
+        h += (g_set.soundPitch == i) ? F("\" selected>") : F("\">");
+        h += PITCH_LABELS[i];
+        h += F("</option>");
+    }
+    h += F("</select><small>ブザーは約 4kHz で最も大きく、低い音ほど小さく鳴るので、音の高さを変えると、"
+           "音量も変わります (高いほど大きい)。音色や音の高さを選ぶと、試しに鳴らします。LED1 が点灯している (不感帯の外にある) 間は、"
+           "コードを進めながら鳴り続け、不感帯では無音になります。気圧が上がる (+) と明るいメジャー、"
+           "下がる (-) と暗いマイナーの進行になり、変化が大きいほど高い音になります。"
+           "急な変化では駆け上がりを鳴らし、変化が続くと響きが豊かになります。</small>");
 
     // 複数台の表示。リアルタイムには反映せず、保存して再起動すると有効になる
     h += F("<h2>複数台の表示 (ESP-NOW)</h2>"
@@ -246,7 +284,7 @@ setInterval(upd,1000);upd();
 </form>
 <form method="POST" action="/reset"><button type="submit">初期値に戻す</button></form>
 <script>
-var ids=['bright','limit','range','hpf','trail','hue','sat','val','vmod'];
+var ids=['bright','limit','range','hpf','trail','hue','sat','val','vmod','sound','spitch'];
 var wsx=null,timer=null,last=0,extra='',busy=false,again=false,body='';
 function openWs(){try{wsx=new WebSocket('ws://'+location.host+'/ws');
  wsx.onclose=function(){wsx=null;setTimeout(openWs,1000);};}catch(e){wsx=null;}}
@@ -316,6 +354,8 @@ String buildStatusJson(const DeviceStatus &s)
     appendJsonEscaped(j, s.nodeName.c_str());
     j += F("\",\"group\":");
     j += String(g_set.group);
+    j += F(",\"buzzer\":");
+    j += s.buzzer ? F("true") : F("false");
     j += F(",\"fw\":\"" FIRMWARE_VERSION "\"");
     j += F("}");
     return j;

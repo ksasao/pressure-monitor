@@ -30,6 +30,8 @@ struct SenseParams {
     int32_t deltaRange;
     int32_t hpfShift;
     int32_t trailStepTicks;
+    int32_t holdShift;      // 変化量の絶対値が増えるときはすぐ追い、減るときは約 2^holdShift サンプルで
+                            // 戻す (ちらつき防止)。0 = そのまま (今は、どのモードも 0)
 };
 
 // モードの感度。標準とドライブは固定値、カスタムは g_set の値。

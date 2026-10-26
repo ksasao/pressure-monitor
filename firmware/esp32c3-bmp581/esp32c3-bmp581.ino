@@ -53,6 +53,7 @@
  *   display.*           LED の表示
  *   button.*            ボタン (class Button。短押し / 長押し)
  *   battery.*           電池電圧
+ *   sound.*             音 (Qwiic の Modulino Buzzer。LED の色の変化に合わせて鳴らす)
  *   logging.*           シリアルへの出力 (class SerialLog) と性能計測 (class PerfStats)
  *   power.*             省電力 (USB が接続されていないときの、ライトスリープ)
  *   settings_page.*     設定ページの HTML と、状況の JSON
@@ -78,6 +79,7 @@
 #include "display.h"
 #include "button.h"
 #include "battery.h"
+#include "sound.h"
 #include "logging.h"
 #include "portal.h"
 #include "power.h"
@@ -107,6 +109,7 @@ static uint32_t g_lastBatMs = 0;           // 最後に電池電圧を出力し�
 // Qwiic に別のセンサを足すときは、センサごとに HighPassFilter を作り、
 // 同じ SerialLog に、そのセンサの CSV の行を書きます
 static HighPassFilter g_pressureHpf;                    // 気圧のハイパスフィルタ
+static int32_t  g_smoothAcc    = 0;                     // 表示に使う変化量 x 256 (ドライブで保持する)
 static Button         g_bootButton(PIN_BOOT, LONG_PRESS_MS, FACTORY_RESET_PRESS_MS);
 static SerialLog      g_log;
 static PerfStats      g_perf;
@@ -191,7 +194,8 @@ static CRGB solidColor()
 
 // 気圧の CSV を 1 行出す (LOG_EVERY_N ティックに 1 回)
 //   millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value,battery_mV
-// battery_mV は最後に測った電池電圧 (BATTERY_INTERVAL_MS ごとに測る)。毎行、その値を出す
+// battery_mV は最後に測った電池電圧 (BATTERY_INTERVAL_MS ごとに測る)。毎行、その値を出す。
+// hpf は、表示に使う変化量 (ドライブモードでは、小さくなるときにゆっくり戻した値)
 static void logPressure(uint32_t nowMs, const SensorSample &s, int32_t hpf, uint8_t ledValue)
 {
     static uint8_t count = 0;
@@ -205,6 +209,21 @@ static void logPressure(uint32_t nowMs, const SensorSample &s, int32_t hpf, uint
     if (len > (int)sizeof(buf) - 1) len = sizeof(buf) - 1;   // 切り詰められた場合の保険
 
     g_log.writeLine(buf, (size_t)len, nowMs);
+}
+
+// 変化量を、ちらつかないように保持する (ドライブモード)。絶対値が今の値以上になったら、すぐに
+// その値にし (速い変化を遅らせない)、小さくなるときは、約 2^shift サンプルで、ゆっくり戻す。
+// shift = 0 ならそのまま返す。保持しないモードの間も、値を追いかけておく
+// (切り替えた直後に、古い値が出ないように)
+static int32_t holdDelta(int32_t hpf, int32_t shift)
+{
+    const int32_t x = hpf * 256;            // 小数部を 8 ビット持つ
+    if (shift <= 0 || abs(x) >= abs(g_smoothAcc)) {
+        g_smoothAcc = x;
+    } else {
+        g_smoothAcc += (x - g_smoothAcc) >> shift;
+    }
+    return g_smoothAcc / 256;
 }
 
 // センサを 1 回読んで HPF と LED1 の色を更新し、ログを出す。
@@ -223,27 +242,37 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
 
     const SenseParams p = modeSense(currentMode());
     int32_t hpf   = g_pressureHpf.update(s.raw, p.hpfShift);
-    CRGB    color = deltaToColor(hpf, p.deltaLimit, p.deltaRange);
+    // 表示に使う変化量。ドライブモードでは、乗り物の中の速いゆれでちらつかないように、
+    // 小さくなるときだけ、ゆっくり戻す
+    int32_t shown = holdDelta(hpf, p.holdShift);
+    CRGB    color = deltaToColor(shown, p.deltaLimit, p.deltaRange);
 
     // 固定色モードでは、フィルタの出力を明度に反映した色にする (標準モードの感度。
     // modeSense の既定)。履歴は、標準モードと同じく、5 個の LED に流れる
     if (modeIsSolid(currentMode())) {
-        g_solidLevel = deltaLevel(hpf, p.deltaLimit, p.deltaRange);
+        g_solidLevel = deltaLevel(shown, p.deltaLimit, p.deltaRange);
         color = solidColor();
     }
 
-    // 平滑化せずそのまま反映する。ここが応答性の要です。
+    // 平滑化せずそのまま反映する (ドライブモードを除く)。ここが応答性の要です。
     displaySetHead(color);
 
     // 複数台の表示 (送信・ハブのとき)。固定色モードでは、表示している色を送る
-    linkPush(nowMs, s, hpf, color);
+    linkPush(nowMs, s, shown, color);
 
     // 設定モードの表示ページへ (設定モードでなければ何もしない)
-    portalPushSample(nowMs, s.raw, hpf, color.r, color.g, color.b);
-    devlogPush(s.raw, p.hpfShift, s.tempC,  // 基板の中への記録 (記録中だけ)
-               batteryLastMilliVolts(), hpf);
+    portalPushSample(nowMs, s.raw, shown, color.r, color.g, color.b);
+    // 音 (Modulino Buzzer をつないでいるときだけ)。LED の色の段階が上がったときに鳴らす。
+    // 固定色で、気圧の変化を明度に反映しない (valMod = 0) ときは、色が変わらないので鳴らさない
+    int32_t level = deltaLevel(shown, p.deltaLimit, p.deltaRange);
+    if (modeIsSolid(currentMode())) level = (g_set.valMod > 0) ? g_solidLevel : 0;
+    soundTick(nowMs, level);
 
-    if (logEnabled) logPressure(nowMs, s, hpf, colorPeak(color));
+    // 基板の中への記録 (記録中だけ)。変化量は、保持する処理の前の値 (毎サンプルの記録の CSV で、
+    // 気圧から求め直す値と同じにするため)
+    devlogPush(s.raw, p.hpfShift, s.tempC, batteryLastMilliVolts(), hpf);
+
+    if (logEnabled) logPressure(nowMs, s, shown, colorPeak(color));
 }
 
 // ---------------------------------------------------------------- setup
@@ -299,14 +328,15 @@ void setup()
     }
 
     g_sensorReady = sensorBegin();
+    soundBegin();                   // Qwiic の Modulino Buzzer を探す (I2C は sensorBegin で初期化済み)
     if (g_sensorReady) {
         const SenseParams p = modeSense(currentMode());
         Serial.printf("# mode %u (%s)\n", currentMode() + 1, modeName(currentMode()));
-        Serial.printf("# tick %lu ms (%lu Hz) / HPF shift %ld"
+        Serial.printf("# tick %lu ms (%lu Hz) / HPF shift %ld / hold shift %ld"
                       " / limit %ld range %ld (1/64 Pa)\n",
                       (unsigned long)TICK_INTERVAL_MS,
                       1000UL / TICK_INTERVAL_MS,
-                      (long)p.hpfShift,
+                      (long)p.hpfShift, (long)p.holdShift,
                       (long)p.deltaLimit, (long)p.deltaRange);
         Serial.printf("# cpu %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
         batteryMeasure();           // 起動時に 1 回。以降は 1 分ごと

@@ -28,6 +28,7 @@ button,a.btn{font-size:.95em;padding:7px 10px;border:1px solid var(--grid);backg
 .seg button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 a.btn{font-weight:bold}
 #set{position:absolute;top:8px;right:12px}
+#wifioff{margin-left:auto}
 #gw{flex:1 1 auto;min-height:120px;position:relative;margin:0 4px}
 canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #sc{position:absolute;left:8px;top:4px;font-size:.8em;color:var(--sub)}
@@ -66,6 +67,7 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
   <div class="seg" id="gsel"><button type="button" data-g="d" class="on">変化量</button><button type="button" data-g="p">気圧</button></div>
   <div class="seg" id="wsel"><button type="button" data-w="10" class="on">10秒</button><button type="button" data-w="60">60秒</button></div>
   <button type="button" id="fs" hidden>全画面</button>
+  <button type="button" id="wifioff">Wi-Fi を切る</button>
  </div>
 </div>
 <div id="gw"><canvas id="cv"></canvas><div id="sc"></div></div>
@@ -75,12 +77,10 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 <div id="iosdlg"><div class="box">
  <b>この画面では、CSV を保存できません</b><br>
  iPhone の Wi-Fi のログイン画面（自動で開いた画面）には、ファイルを保存する機能がありません。
- 記録は基板の中に残っているので、次の手順で、Safari から保存してください。
- <ol style="margin:8px 0;padding-left:1.3em">
-  <li>右上の「キャンセル」をタップし、Wi-Fi の接続を続ける選択肢（「インターネットなしで使用」など）を選ぶ</li>
-  <li>Safari で <b id="iosurl"></b> を開く</li>
-  <li>「CSV 保存」→「ダウンロード」をタップする（「ファイル」アプリの「ダウンロード」に保存されます）</li>
- </ol>
+ 記録は基板の中に残っています。下のボタンで接続を完了してから、ふだんのブラウザ（Chrome や Safari）で保存してください。
+ <button type="button" id="iosauth">接続を完了して、ブラウザで保存する</button>
+ <small>押すと、右上が「完了」に変わります。「完了」で閉じても、Wi-Fi はつながったままになるので、
+  ブラウザで <b id="iosurl"></b> を開いて、「CSV 保存」から保存できます。</small>
  <button type="button" id="ioscopy">アドレスをコピー</button>
  <button type="button" id="iosclose">閉じる</button>
 </div></div>
@@ -307,6 +307,15 @@ var isIOSCaptive=isIOS&&!/Safari\//.test(ua);
 var iosdlg=document.getElementById('iosdlg'),pageUrl='http://'+location.host+'/';
 document.getElementById('iosurl').textContent=pageUrl;
 document.getElementById('iosclose').onclick=function(){iosdlg.className='';};
+// Wi-Fi を切る: 設定モードを終了して、通常モード (Wi-Fi オフ) に戻る (portal.cpp の /exit)
+document.getElementById('wifioff').onclick=function(){
+ if(!confirm('基板の Wi-Fi を切って、通常モードに戻ります。このページは使えなくなります。'
+  +(rec.on?'記録は、そのまま続きます。':'')+'よろしいですか？'))return;
+ fetch('/exit',{method:'POST'}).catch(function(){}).then(function(){
+  document.getElementById('st').textContent='Wi-Fi を切りました。もう一度使うときは、BOOT ボタンを長押ししてください。';});
+};
+// 接続を完了する: 基板が、この iPhone のネットの確認に「つながっている」と答えるようにする (portal.cpp)
+document.getElementById('iosauth').onclick=function(){location.href='/auth';};
 document.getElementById('ioscopy').onclick=function(){
  var t=document.createElement('textarea');t.value=pageUrl;document.body.appendChild(t);t.select();
  var ok=false;try{ok=document.execCommand('copy');}catch(e){}t.remove();
@@ -336,3 +345,25 @@ setInterval(recUi,500);
 connect();lock();
 </script></body></html>
 )HTML";
+
+const char AUTH_DONE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>接続を完了しました</title>
+<style>body{font-family:sans-serif;margin:16px;line-height:1.6}b.u{font-size:1.1em}
+button{display:block;width:100%;margin-top:10px;padding:10px;font-size:1em}</style></head><body>
+<h3>接続を完了しました</h3>
+<ol style="padding-left:1.3em">
+ <li>右上の「<b>完了</b>」をタップして、この画面を閉じてください（Wi-Fi はつながったままになります）。
+  「完了」が出ないときは、数秒待つか、このページを下に引いて読み込み直してください</li>
+ <li>Chrome や Safari などのブラウザで <b class="u" id="u"></b> を開いてください</li>
+ <li>「CSV 保存」をタップすると、「ファイル」アプリに保存できます</li>
+</ol>
+<button type="button" id="c">アドレスをコピー</button>
+<p><small>保存が終わったら、Wi-Fi をほかのネットワークに切り替えてください。この Wi-Fi はインターネットに
+つながらないため、つないでいる間は、ほかのアプリの通信ができません。</small></p>
+<script>
+var u='http://'+location.host+'/';document.getElementById('u').textContent=u;
+document.getElementById('c').onclick=function(){var t=document.createElement('textarea');t.value=u;
+ document.body.appendChild(t);t.select();var ok=false;try{ok=document.execCommand('copy');}catch(e){}t.remove();
+ this.textContent=ok?'コピーしました':'コピーできませんでした';};
+</script></body></html>)HTML";
