@@ -495,7 +495,35 @@ millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value,battery_mV
 | `normal` | 通常モードで再起動する |
 | `long` | 長押しと同じ（設定モードと通常モードを切り替える） |
 | `short` | 短押しと同じ（モードの番号を見せる。見せている間に送ると、次のモードへ） |
+| `status` | 今の設定、Wi-Fi・無線の状態、基板の中の記録の量などを、まとめて出す（下の表） |
+| `start <間隔> <時刻> <タイムゾーン>` | 基板の中への記録を始める。間隔は `0`（1/30 秒）、`1000`（1 秒）、`30000`（30 秒）[ms]。時刻は PC の時計（UNIX 時刻 [ms]）、タイムゾーンは JavaScript の `Date.getTimezoneOffset()` と同じ（JST は `-540`）。今のモードのまま記録する（通常モードなら Wi-Fi オフ。再起動しない） |
+| `stop <時刻>` | 記録を止める。PC の時計で、その間の基板の時計のずれを補正する |
+| `clear` | 記録を消去する |
+| `dump` | 記録を、`/log.bin` と同じ形のまま送る（下の段落）。記録中は送らない（先に `stop`） |
 | `help` | コマンドの一覧を出す |
+
+`start`、`stop`、`dump` は、PC の時計を付けたり、受け取ったデータを CSV に戻したりする必要があるので、[`tools/serial-command.py`](../../tools/serial-command.py) の `start`、`stop`、`save` から使うのが便利です。
+
+`dump` は、`# dump: begin <バイト数>` の行、そのバイト数のデータ（`/log.bin` と同じ形）、`# dump: end <バイト数> crc32=<8 桁>` の行を送ります。送っている間は、ループが止まります（2MB で数秒〜十数秒）。センサの FIFO（約 1 秒分）があふれるので、記録中は送りません。PC では、[`tools/logbin.py`](../../tools/logbin.py) で、`/log.csv` と同じ内容の CSV に戻せます。
+
+`status` の出力は、`# status 名前=値` の形の行です（最後の行は `# status end=ok`）。Wi-Fi のパスワードは出しません（設定されているかだけ）。
+
+| 名前 | 内容 |
+|---|---|
+| `firmware`、`name`、`mac` | ファームウェアの版、装置の名前、MAC アドレス |
+| `boot_mode`、`reset_reason`、`uptime_s` | 今のモード（`settings` = 設定モード、`normal` = 通常モード）、前回のリセットの理由、起動してからの秒数 |
+| `brownouts`、`free_heap`、`cpu_mhz` | 電源電圧の落ち込みによるリセットの累計、空きメモリ [バイト]、CPU の周波数 |
+| `battery_mv`、`usb_host` | 最後に測った電池電圧 [mV]、USB で PC がつながっているか |
+| `sensor`、`pressure_hpa`、`temperature_c` | センサの有無と、最後に読んだ気圧・温度 |
+| `display_mode`、`sense` | 今の表示モードと、その感度（不感帯 `limit`、上限 `range`、フィルタ `hpf_shift` など） |
+| `settings.*` | 保存されている設定（カスタムの感度、明るさの最大値、固定色、音、役割・グループ、ハブの Wi-Fi） |
+| `wifi`、`wifi.ap`、`wifi.sta` | Wi-Fi の状態。`off`、またはアクセスポイント（SSID、IP アドレス、チャンネル、つないでいる台数）、ルーターへの接続（SSID、IP アドレス、電波の強さ） |
+| `espnow` | 複数台の表示の無線（ESP-NOW）が動いているか |
+| `log.area` | 記録の領域の、使った大きさと全体の大きさ [バイト] |
+| `log.state` | 記録の状態（`recording` = 記録中、`stopped` = 停止した、`full` = いっぱいで止まった、`power_loss` = 電源が切れて終わった、`none` = 記録なし） |
+| `log.start`、`log.interval`、`log.samples` | 記録を始めた日時、記録の間隔、サンプル数（`capacity` = 記録できる数の見込み、`remaining` = 残りの時間） |
+| `log.format`、`log.recorded_as` | 記録の形式の版と、記録したときの装置の名前・役割・表示モード・Wi-Fi |
+| `sensor_period_us` | センサの測定の間隔の見込み [µs]（`measured` = 実測した値、`nominal` = 30Hz の値のまま） |
 
 PC からは、[`tools/serial-command.py`](../../tools/serial-command.py) で送れます（使い方は [tools/README.md](../../tools/README.md)）。
 

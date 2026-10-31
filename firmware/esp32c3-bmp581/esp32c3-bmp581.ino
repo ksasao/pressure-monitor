@@ -67,6 +67,10 @@
  */
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <esp_mac.h>
+#include <stdarg.h>
+#include <time.h>
 
 #include "config.h"
 #include "version.h"
@@ -97,6 +101,8 @@ static const uint32_t MODE_NUMBER_MS = 2000;
 
 // 固定色モードの、フィルタの出力 (-1000〜1000。標準モードの感度)。明度に反映する
 static int32_t  g_solidLevel   = 0;
+static float    g_lastHpa      = NAN;     // 最後に読んだ気圧と温度 (シリアルの status コマンド)
+static float    g_lastTempC    = NAN;
 
 static bool     g_sensorReady  = false;
 static uint8_t  g_shiftCount   = 0;
@@ -187,16 +193,224 @@ static void handleButton()
     }
 }
 
+// status コマンドの 1 行 ("# status <名前>=<値>")。ふだんのログは、送信のバッファに入りきらない行を
+// 捨てるが、この出力はまとめて読みたいので、空くまで少し待つ (1 行あたり最大 200ms)
+static void statusLine(const char *key, const char *fmt, ...)
+{
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "# status %s=", key);
+    va_list ap;
+    va_start(ap, fmt);
+    if (n > 0 && n < (int)sizeof(buf)) n += vsnprintf(buf + n, sizeof(buf) - n, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 2) n = sizeof(buf) - 2;
+    buf[n++] = '\n';
+    buf[n]   = '\0';
+    const uint32_t t0 = millis();
+    while (Serial.availableForWrite() < n && millis() - t0 < 200) delay(1);
+    Serial.write((const uint8_t *)buf, n);
+}
+
+// 今の設定、Wi-Fi・無線の状態、基板の中の記録などを、まとめて出す (シリアルの status コマンド)。
+// Wi-Fi のパスワードは出さない (設定されているかだけ)
+static void printStatus()
+{
+    const uint32_t now = millis();
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    // 装置
+    statusLine("firmware", "%s", FIRMWARE_VERSION);
+    statusLine("name", "%s", settingsNodeName().c_str());
+    statusLine("mac", "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    statusLine("boot_mode", "%s", bootIsSettingsMode() ? "settings" : "normal");
+    statusLine("reset_reason", "%s", bootResetReasonName());
+    statusLine("uptime_s", "%lu", (unsigned long)(now / 1000));
+    statusLine("brownouts", "%lu", (unsigned long)settingsBrownoutCount());
+    statusLine("free_heap", "%lu", (unsigned long)ESP.getFreeHeap());
+    statusLine("cpu_mhz", "%lu", (unsigned long)getCpuFrequencyMhz());
+    statusLine("battery_mv", "%lu", (unsigned long)batteryLastMilliVolts());
+    statusLine("usb_host", "%s", powerHostPresent(now) ? "yes" : "no");
+
+    // センサ
+    statusLine("sensor", "%s", g_sensorReady ? "ok" : "not_found");
+    if (g_sensorReady) {
+        statusLine("pressure_hpa", "%.4f", g_lastHpa);
+        statusLine("temperature_c", "%.2f", g_lastTempC);
+    }
+
+    // 表示モードと、その感度 (標準・ドライブは modes.cpp の値、カスタムは設定の値)
+    const SenseParams p = modeSense(currentMode());
+    statusLine("display_mode", "%u %s", currentMode() + 1, modeName(currentMode()));
+    statusLine("sense", "limit=%ld range=%ld hpf_shift=%ld trail_step=%ld hold_shift=%ld",
+               (long)p.deltaLimit, (long)p.deltaRange, (long)p.hpfShift, (long)p.trailStepTicks,
+               (long)p.holdShift);
+
+    // 保存されている設定
+    statusLine("settings.custom", "limit=%ld range=%ld hpf_shift=%ld trail_step=%ld",
+               (long)g_set.deltaLimit, (long)g_set.deltaRange, (long)g_set.hpfShift,
+               (long)g_set.trailStepTicks);
+    statusLine("settings.brightness", "%ld", (long)g_set.brightness);
+    statusLine("settings.solid", "hue=%ld sat=%ld val=%ld val_mod=%ld",
+               (long)g_set.hue, (long)g_set.sat, (long)g_set.val, (long)g_set.valMod);
+    statusLine("settings.sound", "%ld pitch=%ld (buzzer %s)", (long)g_set.sound, (long)g_set.soundPitch,
+               soundAvailable() ? "found" : "not_found");
+    statusLine("settings.role", "%s group=%ld hub_channel=%ld", linkRoleName((uint8_t)g_set.role),
+               (long)g_set.group, (long)g_set.hubChannel);
+    statusLine("settings.hub_wifi", "ssid=%s password=%s", g_set.wifiSsid,
+               g_set.wifiPass[0] ? "(set)" : "(empty)");
+
+    // Wi-Fi と、複数台の表示の無線 (ESP-NOW)
+    const wifi_mode_t wm = WiFi.getMode();
+    if (wm == WIFI_MODE_NULL) {
+        statusLine("wifi", "off");
+    } else {
+        if (wm == WIFI_AP || wm == WIFI_AP_STA) {
+            statusLine("wifi.ap", "ssid=%s ip=%s channel=%d stations=%d", WiFi.softAPSSID().c_str(),
+                       WiFi.softAPIP().toString().c_str(), WiFi.channel(), WiFi.softAPgetStationNum());
+        }
+        if (wm == WIFI_STA || wm == WIFI_AP_STA) {
+            if (WiFi.status() == WL_CONNECTED) {
+                statusLine("wifi.sta", "connected ssid=%s ip=%s channel=%d rssi=%d", WiFi.SSID().c_str(),
+                           WiFi.localIP().toString().c_str(), WiFi.channel(), WiFi.RSSI());
+            } else {
+                statusLine("wifi.sta", "not_connected channel=%d", WiFi.channel());
+            }
+        }
+    }
+    statusLine("espnow", "%s", linkRadioOn() ? "on" : "off");
+
+    // 基板の中の記録
+    DevlogInfo li;
+    devlogGetInfo(li);
+    statusLine("log.area", "%s used=%lu total=%lu (%lu%%)", li.available ? "ok" : "none",
+               (unsigned long)li.usedBytes, (unsigned long)li.partitionBytes,
+               li.partitionBytes ? (unsigned long)((uint64_t)li.usedBytes * 100 / li.partitionBytes) : 0UL);
+    statusLine("log.state", "%s", li.endReason);
+    if (li.hasLog) {
+        // 記録を始めた日時 (スマホのタイムゾーン)
+        const time_t t = (time_t)((li.startEpochMs - (int64_t)li.tzMin * 60000) / 1000);
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        const int32_t off = -li.tzMin;
+        statusLine("log.start", "%04d-%02d-%02d %02d:%02d:%02d UTC%c%02ld:%02ld", tm.tm_year + 1900,
+                   tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, off < 0 ? '-' : '+',
+                   (long)(abs(off) / 60), (long)(abs(off) % 60));
+        if (li.intervalMs == 0) statusLine("log.interval", "1/30s");
+        else                    statusLine("log.interval", "%lus (average)", (unsigned long)(li.intervalMs / 1000));
+        // 記録できる残りの時間 (サンプル数と間隔から)
+        const uint32_t rest = li.capacity > li.samples ? li.capacity - li.samples : 0;
+        const float restS = rest * (li.intervalMs ? li.intervalMs / 1000.0f : li.sensorPeriodUs / 1e6f);
+        statusLine("log.samples", "%lu capacity=%lu remaining=%.1fh", (unsigned long)li.samples,
+                   (unsigned long)li.capacity, restS / 3600.0f);
+        statusLine("log.format", "v%u", li.version);
+        if (li.version >= 3) {
+            statusLine("log.recorded_as", "name=%s role=%s mode=%u wifi=%s", li.name, linkRoleName(li.role),
+                       li.mode + 1, li.wifiOff ? "off" : "on");
+        }
+    }
+    statusLine("sensor_period_us", "%.1f (%s)", li.sensorPeriodUs,
+               li.sensorPeriodMeasured ? "measured" : "nominal");
+    statusLine("end", "ok");
+}
+
+// シリアルに、全て書き終えるまで待って書く (ふだんのログと違い、捨てない)。
+// 2 秒進まなければ (PC が読んでいない)、あきらめて false
+static bool serialWriteAll(const uint8_t *p, size_t n)
+{
+    uint32_t last = millis();
+    while (n > 0) {
+        const int room = Serial.availableForWrite();
+        if (room > 0) {
+            const size_t w = Serial.write(p, min((size_t)room, n));
+            p += w;
+            n -= w;
+            if (w > 0) last = millis();
+        } else {
+            if (millis() - last > 2000) return false;
+            delay(1);
+        }
+    }
+    return true;
+}
+
+static void serialPrintAll(const char *s)
+{
+    serialWriteAll((const uint8_t *)s, strlen(s));
+}
+
+static void serialDumpBegin(uint32_t total)
+{
+    char buf[40];
+    snprintf(buf, sizeof(buf), "# dump: begin %lu\n", (unsigned long)total);
+    serialPrintAll(buf);
+}
+
+// 記録を、/log.bin と同じ形のまま、シリアルで送る (dump コマンド)。
+//   # dump: begin <バイト数>\n、<バイト数> バイトのデータ、\n# dump: end <バイト数> crc32=<8 桁>\n
+// 送っている間は、ループが止まる (2MB で数秒〜十数秒)。センサの FIFO (約 1 秒分) があふれるので、
+// 記録中は送らない (先に stop する)
+static void serialDump()
+{
+    if (devlogRecording()) {
+        serialPrintAll("# dump: error recording (stop first)\n");
+        return;
+    }
+    uint32_t bytes = 0, crc = 0;
+    if (!devlogDump(serialDumpBegin, serialWriteAll, bytes, crc)) {
+        serialPrintAll(bytes == 0 && !devlogAvailable() ? "# dump: error no_log_area\n" : "# dump: error no_log_or_write\n");
+        return;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "\n# dump: end %lu crc32=%08lx\n", (unsigned long)bytes, (unsigned long)crc);
+    serialPrintAll(buf);
+}
+
+// 記録を始める (start コマンド)。start <間隔 [ms]> <PC の時計 (UNIX 時刻 [ms])> <タイムゾーン [分]>
+//   間隔: 0 = 1/30 秒、1000 = 1 秒、30000 = 30 秒 (その間の平均)
+//   タイムゾーン: JavaScript の Date.getTimezoneOffset() と同じ (JST は -540)
+// 今のモードのまま記録する (通常モードなら Wi-Fi オフ、設定モードなら Wi-Fi のまま)。再起動はしない
+static void serialRecStart(char *args[3])
+{
+    const long    iv = args[0] ? strtol(args[0], nullptr, 10) : -1;
+    const int64_t t  = args[1] ? strtoll(args[1], nullptr, 10) : 0;
+    const long    tz = args[2] ? strtol(args[2], nullptr, 10) : 0;
+    if (!(iv == 0 || iv == 1000 || iv == 30000) || t < 1600000000000LL || tz < -900 || tz > 900) {
+        serialPrintAll("# rec: error usage: start <interval_ms 0|1000|30000> <epoch_ms> <tz_min>\n");
+        return;
+    }
+    if (!devlogAvailable()) {
+        serialPrintAll("# rec: error no_log_area\n");
+        return;
+    }
+    if (g_set.role != LINK_ROLE_STANDALONE) {
+        // 送信・ハブのときは、ESP-NOW の無線が動き続け、ライトスリープに入らない (電池の消費が大きい)
+        char buf[96];
+        snprintf(buf, sizeof(buf), "# rec: warning role=%s (radio stays on; battery drains faster)\n",
+                 linkRoleName((uint8_t)g_set.role));
+        serialPrintAll(buf);
+    }
+    serialPrintAll("# rec: start requested\n");
+    // 通常モードなら、Wi-Fi をオフにして記録したことになる (記録の wifi=off)。再起動はしない
+    devlogRequestStart(t, (int32_t)tz, !bootIsSettingsMode(), (uint32_t)iv);
+}
+
 // シリアルからの操作 (BOOT ボタンの操作の代わり。試験や、ボタンを押しにくいときに使う)。
 // 1 行に 1 つのコマンド (大文字・小文字は区別しない)。工場出荷時に戻す操作 (超長押し) はない
 //   settings : 設定モード (Wi-Fi) で再起動する
 //   normal   : 通常モードで再起動する
 //   long     : 長押しと同じ (設定モードと通常モードを切り替える)
 //   short    : 短押しと同じ (モードの番号を見せる。見せている間なら、次のモードへ)
+//   status   : 今の設定、Wi-Fi・無線の状態、記録の量などを、まとめて出す ("# status 名前=値" の行)
+//   start <間隔 ms> <時刻 ms> <タイムゾーン 分> : 記録を始める (serialRecStart)
+//   stop <時刻 ms> : 記録を止める (PC の時計で、基板の時計のずれを補正する)
+//   clear    : 記録を消去する
+//   dump     : 記録を /log.bin と同じ形で送る (serialDump。PC で CSV に戻す: tools/serial-command.py)
 //   help     : コマンドの一覧
 static void handleSerialCommand()
 {
-    static char    line[24];
+    static char    line[64];
     static uint8_t len = 0;
     while (Serial.available() > 0) {
         const int c = Serial.read();
@@ -208,20 +422,40 @@ static void handleSerialCommand()
         if (len == 0) continue;
         line[len] = '\0';
         len = 0;
-        if (strcmp(line, "settings") == 0) {
+        // コマンドと引数に分ける (引数は 3 個まで)
+        char *args[3] = { nullptr, nullptr, nullptr };
+        char *cmd = strtok(line, " \t");
+        for (uint8_t i = 0; i < 3; i++) args[i] = strtok(nullptr, " \t");
+        if (!cmd) continue;
+        if (strcmp(cmd, "start") == 0) {
+            serialRecStart(args);
+        } else if (strcmp(cmd, "stop") == 0) {
+            // スマホの代わりに、PC の時計を受け取る (基板の時計のずれを補正する)。なければ補正しない
+            const int64_t t = args[0] ? strtoll(args[0], nullptr, 10) : 0;
+            Serial.println(F("# rec: stop requested"));
+            devlogRequestStop(t > 0 ? t : 0);
+        } else if (strcmp(cmd, "clear") == 0) {
+            Serial.println(F("# rec: clear requested"));
+            devlogRequestClear();
+        } else if (strcmp(cmd, "dump") == 0) {
+            serialDump();
+        } else if (strcmp(cmd, "settings") == 0) {
             Serial.println(F("# serial: settings"));
             bootRebootInto(true);
-        } else if (strcmp(line, "normal") == 0) {
+        } else if (strcmp(cmd, "normal") == 0) {
             Serial.println(F("# serial: normal"));
             bootRebootInto(false);
-        } else if (strcmp(line, "long") == 0) {
+        } else if (strcmp(cmd, "long") == 0) {
             Serial.println(F("# serial: long press"));
             bootRebootInto(!bootIsSettingsMode());
-        } else if (strcmp(line, "short") == 0) {
+        } else if (strcmp(cmd, "short") == 0) {
             Serial.println(F("# serial: short press"));
             shortPress();
+        } else if (strcmp(cmd, "status") == 0) {
+            printStatus();
         } else {
-            Serial.println(F("# serial commands: settings, normal, long, short, help"));
+            Serial.println(F("# serial commands: settings, normal, long, short, status, "
+                             "start <interval_ms> <epoch_ms> <tz_min>, stop <epoch_ms>, clear, dump, help"));
         }
     }
 }
@@ -306,6 +540,8 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     const SensorSample &s = ss[count - 1];      // いちばん新しい値
 
     portalSetSensor(s.hPa, s.tempC);            // 設定ページの表示用
+    g_lastHpa   = s.hPa;
+    g_lastTempC = s.tempC;
     CRGB color = deltaToColor(shown, p.deltaLimit, p.deltaRange);
 
     // 固定色モードでは、フィルタの出力を明度に反映した色にする (標準モードの感度。

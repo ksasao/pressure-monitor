@@ -854,7 +854,9 @@ void devlogService(uint32_t nowMs)
         s_cmd = CMD_NONE;
         if (cmd == CMD_START) {
             startRecording(s_cmdEpoch, s_cmdTz, s_cmdWifiOff, s_cmdInterval);
-            if (s_cmdWifiOff) s_rebootAtMs = nowMs + 800;   // 応答を返してから再起動する
+            // 設定モードで Wi-Fi をオフにするときは、応答を返してから、通常モードで再起動する
+            // (通常モードで始めたとき (シリアルの start) は、もう Wi-Fi はオフなので、再起動しない)
+            if (s_cmdWifiOff && bootIsSettingsMode()) s_rebootAtMs = nowMs + 800;
         } else if (cmd == CMD_STOP) {
             stopRecording(s_cmdEpoch);
         } else if (cmd == CMD_CLEAR) {
@@ -898,6 +900,37 @@ uint32_t devlogCapacity()
     const uint32_t used = s_end - DATA_START;
     if (s_count < 3000 || used == 0) return devlogCount() + (uint32_t)((uint64_t)rest * 10 / 11);
     return devlogCount() + (uint32_t)((uint64_t)rest * s_count / used);
+}
+
+void devlogGetInfo(DevlogInfo &info)
+{
+    memset(&info, 0, sizeof(info));
+    info.available      = s_part != nullptr;
+    info.partitionBytes = s_part ? s_part->size : 0;
+    info.usedBytes      = s_valid ? s_end : 0;
+    info.hasLog         = s_valid;
+    info.endReason      = "none";
+    info.sensorPeriodUs       = s_periodMagic == PERIOD_MEASURED || s_periodMagic == PERIOD_MAGIC
+                                ? s_periodUs : FIFO_PERIOD_NOMINAL_US;
+    info.sensorPeriodMeasured = s_periodMagic == PERIOD_MEASURED;
+    if (!s_valid) return;
+    info.version      = s_header.version;
+    info.startEpochMs = s_header.startEpochMs;
+    info.tzMin        = s_header.tzMin;
+    info.intervalMs   = intervalOf(s_header);
+    info.samples      = devlogCount();
+    info.capacity     = devlogCapacity();
+    if (s_recording)                 info.endReason = "recording";
+    else if (s_stop.stopped != 0)    info.endReason = "recording";   // 記録中に止まった (起動の途中)
+    else if (s_stop.stopPhoneMs > 0) info.endReason = "stopped";
+    else                             info.endReason = s_full ? "full" : "power_loss";
+    if (s_header.version >= 3) {
+        memcpy(info.name, s_header.name, sizeof(info.name));
+        info.name[NODE_NAME_MAX] = '\0';
+        info.role    = s_header.role;
+        info.wifiOff = (s_header.flags & FLAG_WIFI_OFF) != 0;
+    }
+    info.mode = s_header.mode;
 }
 
 uint32_t devlogIntervalMs()
@@ -1365,6 +1398,56 @@ void devlogHandleCsv(AsyncWebServerRequest *req)
 //  20  先頭 (BOM、コメント、列の名前。UTF-8)
 //  20 + 先頭の長さ: 記録 (ヘッダのセクタから、書き終えたところまで)
 static const uint32_t BIN_PRE = 20;
+
+// /log.bin の先頭 (BIN_PRE バイト)
+static void binPreamble(const CsvState &st, uint8_t *p)
+{
+    memcpy(p, "PMLB", 4);
+    p[4] = 1;
+    p[5] = (uint8_t)st.lineBytes;
+    p[6] = p[7] = 0;
+    put32(p + 8,  st.head.length());
+    put32(p + 12, st.lines);
+    put32(p + 16, st.end);
+}
+
+// CRC-32 (IEEE 802.3。Python の zlib.crc32 と同じ)
+static uint32_t crc32Update(uint32_t crc, const uint8_t *p, size_t n)
+{
+    crc = ~crc;
+    while (n--) {
+        crc ^= *p++;
+        for (uint8_t k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320UL & (0 - (crc & 1)));
+    }
+    return ~crc;
+}
+
+bool devlogDump(void (*begin)(uint32_t total), bool (*writeAll)(const uint8_t *p, size_t n),
+                uint32_t &bytes, uint32_t &crc)
+{
+    bytes = 0;
+    crc   = 0;
+    if (!s_part || !s_valid) return false;
+    auto st = makeCsvState();
+    begin(BIN_PRE + st->head.length() + st->end);
+    uint8_t buf[512];
+    binPreamble(*st, buf);
+    if (!writeAll(buf, BIN_PRE)) return false;
+    crc = crc32Update(crc, buf, BIN_PRE);
+    const uint8_t *h = (const uint8_t *)st->head.c_str();
+    if (!writeAll(h, st->head.length())) return false;
+    crc = crc32Update(crc, h, st->head.length());
+    for (uint32_t off = 0; off < st->end; ) {
+        const uint32_t k = min((uint32_t)sizeof(buf), st->end - off);
+        esp_partition_read(s_part, off, buf, k);
+        if (!writeAll(buf, k)) return false;
+        crc = crc32Update(crc, buf, k);
+        off += k;
+    }
+    bytes = BIN_PRE + st->head.length() + st->end;
+    return true;
+}
+
 static volatile uint32_t s_binSent   = 0;
 static volatile uint32_t s_binTotal  = 0;
 static volatile uint32_t s_binLastMs = 0;
@@ -1377,14 +1460,7 @@ void devlogHandleBin(AsyncWebServerRequest *req)
     }
     auto st = makeCsvState();
     auto pre = std::make_shared<std::array<uint8_t, BIN_PRE>>();
-    uint8_t *p = pre->data();
-    memcpy(p, "PMLB", 4);
-    p[4] = 1;
-    p[5] = (uint8_t)st->lineBytes;
-    p[6] = p[7] = 0;
-    put32(p + 8,  st->head.length());
-    put32(p + 12, st->lines);
-    put32(p + 16, st->end);
+    binPreamble(*st, pre->data());
     const size_t total = BIN_PRE + st->head.length() + st->end;
     s_binSent   = 0;
     s_binTotal  = total;

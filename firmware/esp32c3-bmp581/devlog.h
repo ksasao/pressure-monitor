@@ -101,6 +101,8 @@
 
 #include <stdint.h>
 
+#include "settings.h"          // NODE_NAME_MAX
+
 class AsyncWebServerRequest;
 class HighPassFilter;
 
@@ -137,6 +139,27 @@ uint32_t devlogCount();                   // 記録したサンプル数
 uint32_t devlogCapacity();                // 記録できるサンプル数の見込み (記録した数を含む)
 uint32_t devlogIntervalMs();              // 今の記録の間隔 [ms]。0 = 毎サンプル (30Hz)
 
+// 記録の状態 (シリアルの status コマンドで出す)
+struct DevlogInfo {
+    bool     available;         // 記録の領域がある
+    uint32_t partitionBytes;    // 記録の領域の大きさ
+    uint32_t usedBytes;         // 使った大きさ (ヘッダのセクタを含む)
+    bool     hasLog;            // 記録がある
+    uint8_t  version;           // 記録の形式の版
+    int64_t  startEpochMs;      // 記録を始めた時刻 (スマホの時計、UNIX 時刻 [ms])
+    int16_t  tzMin;             // 記録を始めたときのスマホのタイムゾーン (Date.getTimezoneOffset())
+    uint32_t intervalMs;        // 記録の間隔。0 = 毎サンプル
+    const char *endReason;      // "recording"、"stopped"、"full"、"power_loss"、"none" (記録なし)
+    uint32_t samples;           // 記録したサンプル数
+    uint32_t capacity;          // 記録できるサンプル数の見込み (記録した数を含む)
+    char     name[NODE_NAME_MAX + 1];   // 記録したときの装置の名前 (版 3 から)
+    uint8_t  role, mode;        // 記録したときの役割、表示モード (版 3 から)
+    bool     wifiOff;           // Wi-Fi をオフにして記録した
+    float    sensorPeriodUs;    // センサの測定の間隔の見込み [µs]
+    bool     sensorPeriodMeasured;   // 実測した値か (false = 30Hz の値のまま)
+};
+void devlogGetInfo(DevlogInfo &info);
+
 // /log.csv の応答 (CSV を少しずつ作って返す)。行の長さをそろえるので、大きさが先に決まる
 // (1 行目は # で始まるコメント (装置の名前、役割など)、2 行目は列の名前、3 行目からデータ。
 //  データは 1 行 88 バイト。毎サンプルの記録の 5 時間分で約 48MB)
@@ -144,6 +167,12 @@ void devlogHandleCsv(AsyncWebServerRequest *req);
 
 // /log.bin の応答 (記録をそのまま送る。表示ページが、/log.csv と同じ CSV を作る)
 void devlogHandleBin(AsyncWebServerRequest *req);
+
+// /log.bin と同じものを、writeAll で書き出す (シリアルの dump コマンド)。書き出す前に、全体の大きさで
+// begin を呼ぶ。bytes に書いたバイト数、crc に CRC-32 (zlib.crc32 と同じ) が入る。記録がない、または
+// writeAll が false を返したら false
+bool devlogDump(void (*begin)(uint32_t total), bool (*writeAll)(const uint8_t *p, size_t n),
+                uint32_t &bytes, uint32_t &crc);
 
 // CSV のダウンロードの進み具合 (表示ページに出す)
 bool devlogDownloading();                 // 送っている途中 (設定モードを自動で終了しない)
