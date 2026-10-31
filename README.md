@@ -33,7 +33,7 @@ pressure-monitor/
 │   ├── esp32c3-bmp581/
 │   │   └── flasher/           ブラウザの書き込みツールと、リリースしたバイナリ
 │   └── assets/images/
-├── tools/                     リリースのスクリプト (RELEASING.md)
+├── tools/                     リリースと試験のスクリプト (tools/README.md)
 ├── RELEASING.md               ファームウェアのリリース手順
 ├── LICENSE
 └── README.md

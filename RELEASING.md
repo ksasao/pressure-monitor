@@ -137,7 +137,8 @@ GitHub Pages（`main` ブランチの `docs/`）に、数分で反映されま�
 ```
 tools/
 ├── release.mjs                     リリースを作るスクリプト
-└── serve-docs.mjs                  docs/ を localhost で公開する (確認用)
+├── serve-docs.mjs                  docs/ を localhost で公開する (確認用)
+└── serial-command.py               シリアルから BOOT ボタンの操作を送る (試験用。tools/README.md)
 docs/esp32c3-bmp581/flasher/        書き込みツール (GitHub Pages)
 ├── index.html, flasher.js, style.css
 ├── releases.json                   リリースの一覧 (新しい順)

@@ -497,7 +497,13 @@ millis,pressure_hPa,raw,hpf,temperature_C,altitude_m,led_value,battery_mV
 | `short` | 短押しと同じ（モードの番号を見せる。見せている間に送ると、次のモードへ） |
 | `help` | コマンドの一覧を出す |
 
-例（Python、pyserial）: `serial.Serial('COM6', 115200).write(b'settings\n')`。ポートを開くと、シリアルモニタと同じく、基板がリセットされることがあります（DTR・RTS を False にしてから開くと、リセットされません）。
+PC からは、[`tools/serial-command.py`](../../tools/serial-command.py) で送れます（使い方は [tools/README.md](../../tools/README.md)）。
+
+```bash
+python tools/serial-command.py COM6 settings
+```
+
+ほかのアプリから送るときは、ポートを開く前に DTR・RTS を False にしてください。そうしないと、シリアルモニタと同じく、ポートを開いたときに基板がリセットされることがあります。
 
 ## 省電力（ライトスリープ）
 
