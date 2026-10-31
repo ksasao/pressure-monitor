@@ -88,9 +88,9 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
  <b>基板の中に記録します</b>
  <label style="display:block;margin-top:6px">記録の間隔
   <select id="reciv" style="font-size:1em;margin-left:4px">
-   <option value="0">1/30 秒（最長 約 5.5 時間）</option>
-   <option value="1000">1 秒（最長 約 39 時間）</option>
-   <option value="30000">30 秒（最長 約 48 日）</option>
+   <option value="0">1/30 秒（最長 約 16 時間）</option>
+   <option value="1000">1 秒（最長 約 68 時間）</option>
+   <option value="30000">30 秒（最長 約 84 日）</option>
   </select></label>
  <small>1 秒と 30 秒は、その間の平均を記録します。LED の表示は変わりません。</small>
  <div id="recold"></div>
@@ -259,6 +259,7 @@ function recUi(){
  else if(rec.full)t='いっぱいで停止 '+t;
  if(rec.none)t='記録できません（記録の領域がありません）';
  var d=dlText();if(d)t=d;
+ if(fast.text&&(fast.busy||Date.now()-fast.at<10000))t=fast.text;   // 記録の受信と、CSV の作成
  document.getElementById('ri').textContent=t;
 }
 // 停止するときも、スマホの時計を送る (基板の時計のずれを補正する)
@@ -320,19 +321,190 @@ document.getElementById('ioscopy').onclick=function(){
  var t=document.createElement('textarea');t.value=pageUrl;document.body.appendChild(t);t.select();
  var ok=false;try{ok=document.execCommand('copy');}catch(e){}t.remove();
  this.textContent=ok?'コピーしました':'コピーできませんでした';};
+// ---- CSV を作る (/log.bin から。devlog.cpp の nextSample、makeLine と同じ計算で、/log.csv と同じ内容にする)
+// buf: /log.bin の中身 (ArrayBuffer)。progress(割合) を呼びながら少しずつ作り、Blob を返す
+function binToCsv(buf,progress){return new Promise(function(resolve,reject){
+ var dv=new DataView(buf),u=new Uint8Array(buf);
+ if(u.length<20||String.fromCharCode(u[0],u[1],u[2],u[3])!=='PMLB'||u[4]!==1){reject(new Error('形式が違います'));return;}
+ var L=u[5],headLen=dv.getUint32(8,true),lines=dv.getUint32(12,true),end=dv.getUint32(16,true);
+ var B=20+headLen;                         // 記録 (フラッシュの先頭) の位置
+ if(B+end>u.length||end<4096+64){reject(new Error('記録が途中で切れています'));return;}
+ // ヘッダ (LogHeader) と、停止の情報 (StopInfo)
+ var ver=u[B+4],ses=u[B+5],tz=dv.getInt16(B+6,true),start=Number(dv.getBigInt64(B+8,true));
+ var iv=ver>=4?dv.getUint32(B+53,true):0;if(iv===0xFFFFFFFF)iv=0;
+ var stopRel=dv.getUint32(B+68,true),stopPhone=Number(dv.getBigInt64(B+72,true));
+ var corr=u[B+64]===0&&stopPhone>0&&stopRel>0,err=corr?stopPhone-(start+stopRel):0;
+ // HPF (high_pass_filter.cpp と同じ。値は 2^53 より十分小さいので、Number で正確に計算できる)
+ var hp={px:Number(dv.getBigInt64(B+16,true)),y:Number(dv.getBigInt64(B+24,true)),init:u[B+32]!==0};
+ function rsa(v,s){var p=Math.pow(2,s),r=Math.floor((Math.abs(v)+p/2)/p);return v<0?-r:r;}
+ function hpf(x,sh){if(sh<1)sh=1;if(sh>30)sh=30;var cx=x*256;
+  if(!hp.init){hp.px=cx;hp.y=0;hp.init=true;}
+  var dec=rsa(hp.y,sh);hp.y=hp.y+(cx-hp.px)-dec;hp.px=cx;return rsa(hp.y,8);}
+ function u24(o){return u[o]|(u[o+1]<<8)|(u[o+2]<<16);}
+ function i16(v){return (v<<16)>>16;}
+ // 次のサンプル (S に入れる)。終わりなら false
+ var S={off:4096,inF:false,n:0,idx:0,kind:0,pos:0,pe:0,rel:0,raw:0,sh:8,t:0,ah:0,avgHave:false,bat:0,r0:0,per:0};
+ function next(){
+  while(!S.inF||S.idx>S.n){
+   S.inF=false;
+   if(S.off+6>end)return false;
+   var o=B+S.off,tag=u[o];
+   if(u[o+1]!==ses)return false;
+   if(tag===0xB0){hp.px=0;hp.y=0;hp.init=false;S.off+=6;continue;}          // 再起動
+   if(tag===0xBA){S.bat=dv.getUint16(o+2,true);S.off+=4;continue;}           // 電池電圧
+   if(tag===0xA7){                                                           // 平均
+    if(S.off+14>end)return false;
+    S.rel=dv.getUint32(o+2,true);S.raw=u24(o+6);S.t=dv.getInt16(o+9,true);S.ah=(u24(o+11)<<8)>>8;
+    S.kind=2;S.avgHave=true;S.n=0;S.idx=0;S.inF=true;S.off+=14;continue;}
+   if(tag===0xA8){                                                           // 平均 (前との差)
+    if(!S.avgHave||S.off+8>end)return false;
+    S.rel=(S.rel+dv.getInt8(o+2)+iv)>>>0;S.raw+=dv.getInt16(o+3,true);S.t=i16(S.t+dv.getInt8(o+5));
+    S.ah=dv.getInt16(o+6,true);S.kind=2;S.n=0;S.idx=0;S.inF=true;S.off+=8;continue;}
+   if(tag===0xA9){                                                           // 毎サンプル (版 6。センサの間隔)
+    if(S.off+17>end)return false;
+    var fl=dv.getUint16(o+13,true);S.n=u[o+2];
+    if(S.n>239||fl>733||S.off+17+fl>end)return false;
+    S.kind=3;S.pos=o+17;S.pe=o+17+fl;S.sh=u[o+3];S.r0=dv.getUint32(o+4,true);S.per=dv.getUint16(o+15,true);
+    S.rel=S.r0;S.raw=u24(o+8);S.t=dv.getInt16(o+11,true);S.idx=0;S.inF=true;S.off+=17+fl;continue;}
+   if(tag===0xA6){                                                           // 毎サンプル (版 5)
+    if(S.off+15>end)return false;
+    var bl=dv.getUint16(o+13,true);S.n=u[o+2];
+    if(S.n>119||bl>484||S.off+15+bl>end)return false;
+    S.kind=1;S.pos=o+15;S.pe=o+15+bl;S.sh=u[o+3];S.rel=dv.getUint32(o+4,true);S.raw=u24(o+8);
+    S.t=dv.getInt16(o+11,true);S.idx=0;S.inF=true;S.off+=15+bl;continue;}
+   if(tag!==0xA5)return false;                                               // 毎サンプル (版 4 まで)
+   S.n=u[o+2];if(S.n>29)return false;
+   var len=13+S.n*3;if(S.off+len>end)return false;
+   S.kind=0;S.pos=o+13;S.sh=u[o+3];S.rel=dv.getUint32(o+4,true);S.raw=u24(o+8);
+   S.t=dv.getInt16(o+11,true);S.idx=0;S.inF=true;S.off+=len;
+  }
+  if(S.idx>0&&S.kind===3){                  // 符号を 1 つ読む (devlog.cpp の unfifoCode)
+   var q=S.pos,qe=S.pe,c,dd;
+   while(qe-q>=2&&u[q]===0xC1){S.t=i16(S.t+dv.getInt8(q+1));q+=2;}
+   if(q>=qe)return false;
+   c=u[q];
+   if(c<0x80){dd=c&0x40?c-128:c;q+=1;}
+   else if(c<0xC0){if(qe-q<2)return false;var w=((c&0x3F)<<8)|u[q+1];dd=w>=8192?w-16384:w;q+=2;}
+   else if(c===0xC0){if(qe-q<3)return false;dd=dv.getInt16(q+1,true);q+=3;}
+   else return false;
+   // 時刻は、先頭の時刻と間隔から (devlog.cpp の fifoRel)
+   S.pos=q;S.rel=(S.r0+Math.floor((S.idx*S.per+500)/1000))>>>0;S.raw+=dd;
+  }else if(S.idx>0&&S.kind===1){            // 符号を 1 つ読む (devlog.cpp の unpackSample)
+   var p=S.pos,e=S.pe,b,dt,d;
+   while(e-p>=2&&u[p]===0xC1){S.t=i16(S.t+dv.getInt8(p+1));p+=2;}
+   if(p>=e)return false;
+   b=u[p];
+   if(b<0x80){dt=33;d=b&0x40?b-128:b;p+=1;}
+   else if(b<0xC0){if(e-p<2)return false;var v=((b&7)<<8)|u[p+1];dt=32+((b>>3)&7);d=v>=1024?v-2048:v;p+=2;}
+   else if(b===0xC0){if(e-p<4)return false;dt=u[p+1];d=dv.getInt16(p+2,true);p+=4;}
+   else return false;
+   S.pos=p;S.rel=(S.rel+dt)>>>0;S.raw+=d;
+  }else if(S.idx>0){S.rel=(S.rel+u[S.pos])>>>0;S.raw+=dv.getInt16(S.pos+1,true);S.pos+=3;}
+  S.idx++;return true;
+ }
+ // C の %0Nd (幅は符号を含む)
+ function z(v,w){var s=''+Math.abs(v);while(s.length<w-(v<0?1:0))s='0'+s;return (v<0?'-':'')+s;}
+ function clamp(v,l){return v>l?l:(v<-l?-l:v);}
+ var BLANK=new Array(L-1).join(' ')+'\r\n',cs=null,ds='';
+ function line(){
+  if(!next())return BLANK;
+  var h=S.kind===2?S.ah:hpf(S.raw,S.sh);
+  var unix=start+S.rel;
+  // 時刻の補正 (err*rel は 2^53 より小さく、割った値の誤差は 1 より十分小さいので、切り捨ては C と同じ)
+  if(corr)unix+=Math.trunc(err*S.rel/stopRel);
+  var loc=unix-tz*60000,sec=Math.trunc(loc/1000);
+  if(sec!==cs){cs=sec;var t=new Date(sec*1000);
+   ds=z(t.getUTCFullYear(),4)+'-'+z(t.getUTCMonth()+1,2)+'-'+z(t.getUTCDate(),2)+' '
+    +z(t.getUTCHours(),2)+':'+z(t.getUTCMinutes(),2)+':'+z(t.getUTCSeconds(),2);}
+  var pk=Math.trunc((S.raw*25+8)/16),hc=clamp(h,9999999),tc=clamp(S.t,9999),ta=Math.abs(tc);
+  var s=ds+'.'+z(loc%1000,3)+','+z(unix,13)+','+z(S.rel>99999999?99999999:S.rel,8)+','
+   +z(Math.trunc(pk/10000)%10000,4)+'.'+z(pk%10000,4)+','+z(S.raw,8)+','
+   +(hc<0?'-':'+')+z(Math.abs(hc),7)+','+(tc<0?'-':'+')+z(Math.trunc(ta/100),2)+'.'+z(ta%100,2)+',';
+  if(ver>=3&&s.length<L+8)s+=z(S.bat>9999?9999:S.bat,4);   // 版 2 は空欄
+  if(s.length>L-2)s=s.substring(0,L-2);
+  while(s.length<L-2)s+=' ';
+  return s+'\r\n';
+ }
+ var parts=[u.subarray(20,B)],done=0,CH=20000;
+ (function step(){
+  try{
+   var a=[],n=Math.min(CH,lines-done);
+   for(var i=0;i<n;i++)a.push(line());
+   done+=n;if(a.length)parts.push(new Blob([a.join('')]));
+   if(progress)progress(lines?done/lines:1);
+   if(done<lines){setTimeout(step,0);return;}
+   resolve(new Blob(parts,{type:'text/csv'}));
+  }catch(e){reject(e);}
+ })();
+});}
+// ---- ここまで (CSV を作る)
+// CSV の保存。ふだんのブラウザ (Chrome、Safari など) では、記録をそのまま受け取り (/log.bin)、
+// このページで CSV を作る (速い)。Wi-Fi のログイン画面は、ページで作ったファイルを保存できないので、
+// 基板が作る CSV (/log/<ファイル名>) を保存する (遅い)。Android のログイン画面は WebView で、
+// User-Agent に "; wv)" が入るので、それで見分ける (iPhone のログイン画面は、上の isIOSCaptive)
+var canFast=!/; wv\)/.test(ua)&&!!(window.fetch&&window.Blob&&window.URL&&URL.createObjectURL&&window.BigInt
+ &&DataView.prototype.getBigInt64);
+var fast={busy:false,text:'',at:0};
+function setFast(t){fast.text=t;fast.at=Date.now();recUi();}
+function csvName(){var d=new Date();
+ return 'pressure-monitor_'+(devName?devName.replace(/[\\\/:*?"<>|\s]/g,'_')+'_':'')
+  +d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
+  +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';}
+function saveLink(href,fn){
+ var a=document.createElement('a');a.href=href;
+ // download を付けると、iPhone の Safari では、表として開かずに、ダウンロードの確認が出る
+ a.setAttribute('download',fn);document.body.appendChild(a);a.click();a.remove();}
+function saveFast(fn){
+ fast.busy=true;setFast('記録を受信しています...');
+ fetch('/log.bin',{cache:'no-store'}).then(function(r){
+  if(!r.ok)throw new Error('エラー '+r.status);
+  var total=+r.headers.get('Content-Length')||0;
+  if(!r.body||!r.body.getReader)return r.arrayBuffer();
+  var rd=r.body.getReader(),ch=[],got=0;
+  function pump(){return rd.read().then(function(x){
+   if(x.done){var b=new Uint8Array(got),o=0;for(var i=0;i<ch.length;i++){b.set(ch[i],o);o+=ch[i].length;}return b.buffer;}
+   ch.push(x.value);got+=x.value.length;
+   setFast('記録を受信中 '+mb(got)+(total?' / '+mb(total)+' MB（'+Math.floor(100*got/total)+'%）':' MB'));
+   return pump();});}
+  return pump();
+ }).then(function(buf){
+  return binToCsv(buf,function(f){setFast('CSV を作成中（'+Math.floor(100*f)+'%）');});
+ }).then(function(blob){
+  var url=URL.createObjectURL(blob);saveLink(url,fn);
+  setTimeout(function(){URL.revokeObjectURL(url);},60000);
+  fast.busy=false;setFast('CSV を作りました（'+mb(blob.size)+' MB）');
+ }).catch(function(e){
+  fast.busy=false;setFast('');
+  if(confirm('記録を受け取れませんでした（'+e.message+'）。基板が CSV を作る方法（時間がかかります）で保存しますか？'))
+   saveSlow(fn);
+ });
+}
+function saveSlow(fn){saveLink('/log/'+encodeURIComponent(fn),fn);}
 dlA.onclick=function(){
  if(rec.count===0){alert('記録がありません。');return false;}
  if(isIOSCaptive){iosdlg.className='on';return false;}
- // 大きいときは、時間がかかることを先に知らせる (1 行 88 バイト)
- var size=rec.count*88;
- if(size>5*1048576&&!confirm('CSV は約 '+mb(size)+' MB です。保存先を選んだあと、数分かかります。'
-  +'進み具合は、この画面の下と、スマホの通知に表示されます。保存が終わるまで、このページを閉じないでください。'))return false;
- var d=new Date();
- var fn='pressure-monitor_'+(devName?devName.replace(/[\\\/:*?"<>|\s]/g,'_')+'_':'')
-  +d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
-  +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';
+ if(canFast){if(!fast.busy)saveFast(csvName());return false;}
+ // 基板が CSV を作る。大きいときは、時間がかかることを先に知らせる (1 行 88 バイト、約 140KB/秒)。
+ // Android のログイン画面では、Chrome で開き直すと速く保存できることを案内する。Android は、
+ // インターネットにつながらない Wi-Fi ではなく、モバイルデータ通信で 192.168.4.1 を開こうとするので、
+ // モバイルデータ通信をオフにしてもらう
+ var size=rec.count*88,min=Math.max(1,Math.round(size/140000/60));
+ if(size>5*1048576){
+  var msg=/; wv\)/.test(ua)
+   ?'CSV は約 '+mb(size)+' MB で、この画面では保存に約 '+min+' 分かかります。\n\n'
+    +'速く保存するには（数秒〜数十秒）:\n'
+    +'1. 「キャンセル」を押して、この画面を閉じる（Wi-Fi はつないだまま）\n'
+    +'2. スマホのモバイルデータ通信をオフにする\n'
+    +'3. Chrome で '+pageUrl+' を開き、「CSV 保存」を押す\n'
+    +'4. 保存が終わったら、モバイルデータ通信をオンに戻す\n\n'
+    +'この画面のまま保存するときは「OK」を押してください。保存が終わるまで、この画面を閉じないでください。'
+   :'CSV は約 '+mb(size)+' MB です。保存先を選んだあと、約 '+min+' 分かかります。'
+    +'進み具合は、この画面の下と、スマホの通知に表示されます。保存が終わるまで、このページを閉じないでください。';
+  if(!confirm(msg))return false;
+ }
+ // ログイン画面では、押したリンクのまま移動する (ログイン画面が、そのアドレスを保存する)
+ var fn=csvName();
  dlA.href='/log/'+encodeURIComponent(fn);
- // download を付けると、iPhone の Safari では、表として開かずに、ダウンロードの確認が出る
  dlA.setAttribute('download',fn);
  return true;
 };

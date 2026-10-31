@@ -22,5 +22,15 @@ enum SensorStatus {
 // 結果は、シリアルに出力する
 bool sensorBegin();
 
-// 1 回読む。i2cMicros には、読み取りにかかった時間 [µs] が入る (失敗時も)
-SensorStatus sensorRead(SensorSample &out, uint32_t &i2cMicros);
+// センサの FIFO の大きさ (30Hz で約 1 秒分)
+static const uint8_t SENSOR_FIFO_DEPTH = 32;
+
+struct SensorFifoStatus {
+    SensorStatus status;    // 最後の問題 (なければ SENSOR_OK)
+    bool overflow;          // FIFO がいっぱいだった (古い値を、センサが捨てたかもしれない)
+    bool dropped;           // 読めなかった値・捨てた値がある (サンプルが抜けた)
+};
+
+// FIFO にたまった値を全て読む (センサは 30Hz で測る)。古い順に out に入れ、個数を返す (0 もある)。
+// i2cMicros には、読み取りにかかった時間 [µs] が入る (失敗時も)
+uint8_t sensorReadFifo(SensorSample *out, uint8_t maxCount, uint32_t &i2cMicros, SensorFifoStatus &st);

@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <esp_system.h>           // esp_reset_reason()
 
+#include "devlog.h"
+
 // 設定モードへ入るための、再起動をまたぐ目印。
 // RTC メモリに置くと、ソフトウェア再起動 (ESP.restart) では値が残ります。
 // 電源投入直後は不定値なので、リセット要因が SW かどうかも一緒に見ます
@@ -48,6 +50,7 @@ const char *bootResetReasonName()
 void bootRebootInto(bool settings)
 {
     g_bootMagic = settings ? BOOT_MAGIC_SETTINGS : 0;
+    devlogFlush();                      // 記録の作りかけのフレーム (約 4 秒分) を書いておく
     Serial.printf("# rebooting into %s mode\n",
                   settings ? "settings (Wi-Fi)" : "normal");
     delay(100);

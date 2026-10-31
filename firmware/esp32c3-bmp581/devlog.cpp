@@ -5,8 +5,10 @@
 #include <esp_partition.h>
 #include <esp_system.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <sys/time.h>
 #include <time.h>
+#include <array>
 #include <memory>
 
 #include <esp_mac.h>
@@ -22,18 +24,39 @@
 static const uint32_t SECTOR      = 4096;
 static const uint32_t DATA_START  = SECTOR;          // 先頭の 1 セクタがヘッダ
 static const uint32_t STOP_OFFSET = 64;              // 停止の情報の位置
-static const uint8_t  TAG_FRAME   = 0xA5;
+static const uint8_t  TAG_FRAME   = 0xA5;              // 毎サンプルのフレーム (版 4 まで。読むだけ)
+static const uint8_t  TAG_PACK    = 0xA6;              // 毎サンプルのフレーム (版 5。読むだけ)
+static const uint8_t  TAG_FIFO    = 0xA9;              // 毎サンプルのフレーム (版 6 から。センサの間隔)
 static const uint8_t  TAG_BOOT    = 0xB0;
 static const uint8_t  TAG_BATT    = 0xBA;
 static const uint8_t  TAG_AVG     = 0xA7;              // 平均したサンプル (記録の間隔が 1 秒以上)
+static const uint8_t  TAG_AVGD    = 0xA8;              // 平均したサンプル (前との差。版 5 から)
 static const uint32_t FRAME_HDR   = 13;
 static const uint8_t  MAX_DELTAS  = 29;              // 1 フレーム = 30 サンプル (約 1 秒)
 static const uint32_t FRAME_MAX   = FRAME_HDR + MAX_DELTAS * 3;
+static const uint32_t PACK_HDR    = 15;
+static const uint8_t  PACK_MAX    = 119;             // 1 フレーム = 120 サンプル (約 4 秒)
+static const uint32_t PACK_DT     = 33;              // 1 バイトの符号の、前のサンプルからの時間 [ms]
+static const uint8_t  PACK_TEMP_EVERY = 30;          // 温度を書き直す間隔 (サンプル数。約 1 秒)
+static const uint32_t PACK_CODES_MAX  = PACK_MAX * 4 + (PACK_MAX / PACK_TEMP_EVERY + 1) * 2;
+static const uint32_t PACK_FRAME_MAX  = PACK_HDR + PACK_CODES_MAX;
+static const uint32_t FIFO_HDR    = 17;
+static const uint8_t  FIFO_MAX    = 239;             // 1 フレーム = 240 サンプル (約 8 秒)
+static const uint8_t  FIFO_TEMP_EVERY = 30;          // 温度を書き直す間隔 (サンプル数。約 1 秒)
+static const uint32_t FIFO_CODES_MAX  = FIFO_MAX * 3 + (FIFO_MAX / FIFO_TEMP_EVERY + 1) * 2;
+static const uint32_t FIFO_FRAME_MAX  = FIFO_HDR + FIFO_CODES_MAX;
+static const uint32_t READ_FRAME_MAX  = FIFO_FRAME_MAX > PACK_FRAME_MAX ? FIFO_FRAME_MAX : PACK_FRAME_MAX;
+// センサの測定の間隔 [µs]。センサの内蔵の発振器で決まり、30Hz より少し速い (実測 約 33305)。
+// 記録しながら求める。求める前と、値がおかしいときは、これを使う
+static const float    FIFO_PERIOD_NOMINAL_US = 1e6f / 30.0f;
+// 読んだ時刻が、見込みより、これ以上遅れたら、サンプルが抜けたとみなす (新しいフレームにする)
+static const int32_t  FIFO_GAP_US = 100000;
 static const uint32_t BOOT_FRAME  = 6;
 static const uint32_t BATT_FRAME  = 4;
 static const uint32_t AVG_FRAME   = 14;
+static const uint32_t AVGD_FRAME  = 8;
 static const uint32_t RTC_MAGIC   = 0x504D4C47;      // "PMLG"
-static const uint8_t  LOG_VERSION = 4;               // 2、3 の記録も読める (devlog.h)
+static const uint8_t  LOG_VERSION = 6;               // 2〜5 の記録も読める (devlog.h)
 static const uint8_t  FLAG_WIFI_OFF = 1;
 
 struct __attribute__((packed)) LogHeader {
@@ -75,10 +98,34 @@ static volatile uint32_t s_count = 0;      // フラッシュに書き終えた�
 static volatile uint32_t s_end   = DATA_START;   // 書き終えた位置
 static uint32_t s_erasedTo  = DATA_START;  // ここまで消去済み
 
-// 作りかけのフレーム
-static uint8_t  s_frame[FRAME_MAX];
+// 作りかけのフレーム (TAG_FIFO)
+static uint8_t  s_frame[FIFO_FRAME_MAX];
 static bool     s_open   = false;
-static uint8_t  s_n      = 0;
+static uint8_t  s_n      = 0;              // 先頭のあとのサンプル数
+static uint32_t s_len    = 0;              // 符号のバイト数
+// サンプルを読んだ時刻 (フレームの先頭のサンプルを読んだ時刻 s_baseUs からの時間 [µs])。
+// 時刻は、基板の水晶の時計 (esp_timer_get_time)。フレームを閉じるときに、センサが測った時刻を求める
+static int32_t  s_readUs[FIFO_MAX + 1];
+static int64_t  s_baseUs  = 0;             // フレームの先頭のサンプルを読んだ時刻 [µs]
+static uint32_t s_baseG   = 0;             // フレームの先頭のサンプルの番号 (periodTrack の番号)
+static int32_t  s_envUs   = 0;             // 読んだ時刻の下側 (s_readUs[k] - k x 間隔 の最小)
+// センサの測定の間隔の見込み [µs]。記録していないときも、ずっと求め続ける (periodTrack)。
+// 再起動 (設定モードとの切り替え) のあとも使えるように、RTC メモリに残す
+static RTC_NOINIT_ATTR float    s_periodUs;
+static RTC_NOINIT_ATTR uint32_t s_periodMagic;
+static const uint32_t PERIOD_MAGIC = 0x50455244;    // "PERD"
+// 間隔を求めるための、読んだ時刻の下側の点 (256 サンプルごとに、遅れが最小のサンプル)。
+// 8 個 (約 68 秒) 集めて、古い 4 個の中の最小と、新しい 4 個の中の最小を結ぶ傾きを、間隔とする
+static const uint32_t TRACK_BLOCK = 256;
+static const uint8_t  TRACK_BLOCKS = 8;
+static int64_t  s_trkG[TRACK_BLOCKS], s_trkT[TRACK_BLOCKS];   // サンプルの番号と、読んだ時刻 [µs]
+static uint8_t  s_trkN = 0;                // たまった点の数
+static uint32_t s_trkG0 = 0;               // 次のサンプルの番号 (抜けたら 0 から)
+static int64_t  s_blkG = 0, s_blkT = 0;    // 作りかけのブロックの最小の点
+static double   s_blkE = 0;
+static bool     s_gap      = true;         // サンプルが抜けたかもしれない (次は新しいフレーム)
+static int16_t  s_temp   = 0;              // フレームの中の今の温度 [0.01 ℃]
+static uint8_t  s_tempAge = 0;             // 温度を書いてからのサンプル数
 static uint32_t s_lastRel = 0;
 static int32_t  s_lastRaw = 0;
 static int32_t  s_shift   = 0;
@@ -91,6 +138,11 @@ static int64_t  s_accHpf   = 0;
 static int32_t  s_accTemp  = 0;            // 0.01 ℃
 static uint64_t s_accRel   = 0;
 static uint32_t s_nextRel  = 0;            // この時刻 (rel) を過ぎたら書く。0 = 最初のサンプルで決める
+// 前に書いた平均 (TAG_AVGD は、これとの差を書く)。再起動のあとは、最初を TAG_AVG で書く
+static bool     s_avgHave  = false;
+static uint32_t s_avgRel   = 0;
+static int32_t  s_avgRaw   = 0;
+static int16_t  s_avgTemp  = 0;
 
 // 記録中であることを、再起動をまたいで覚えておく (電源が切れると消える)
 static RTC_NOINIT_ATTR uint32_t s_rtcMagic;
@@ -117,6 +169,15 @@ static uint32_t nowRel()
 {
     const int64_t r = nowEpochMs() - s_header.startEpochMs;
     return r < 0 ? 0 : (uint32_t)r;
+}
+
+// 記録を始めてからの時間 [µs]
+static int64_t nowRelUs()
+{
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    const int64_t r = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec - s_header.startEpochMs * 1000;
+    return r < 0 ? 0 : r;
 }
 
 static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -162,18 +223,190 @@ static void writeStop(int64_t phoneMs)
 {
     memset(&s_stop, 0xFF, sizeof(s_stop));
     s_stop.stopped     = 0;
-    s_stop.stopRelMs   = s_lastRel;
+    s_stop.stopRelMs   = s_recording ? max(nowRel(), s_lastRel) : s_lastRel;   // スマホの時計と同じ時点
     s_stop.stopPhoneMs = phoneMs > 0 ? phoneMs : -1;
     flashPrepare();
     esp_partition_write(s_part, STOP_OFFSET, &s_stop, sizeof(s_stop));
 }
 
+// センサの測定の間隔を求める (センサが測った値ごとに呼ぶ。tUs は読んだ時刻 [µs]、基板の水晶の時計)。
+// 読んだ時刻 = 測った時刻 + 遅れ (0〜約 33ms。基板が起きる間隔の分)。基板が起きる間隔 (33ms) と、
+// センサの間隔 (約 33.3ms) が少し違うので、遅れは約 4 秒で 0〜33ms を一巡する (のこぎり波)。
+// そこで、遅れがほぼ 0 のサンプル (読んだ時刻の下側の点) を、離れた 2 か所で探し、その傾きを間隔とする
+static void periodTrack(int64_t tUs)
+{
+    if (s_periodMagic != PERIOD_MAGIC || !(fabsf(s_periodUs / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) {
+        s_periodUs    = FIFO_PERIOD_NOMINAL_US;
+        s_periodMagic = PERIOD_MAGIC;
+    }
+    const uint32_t g = s_trkG0++;
+    const double   e = (double)tUs - (double)g * s_periodUs;    // 小さいほど、遅れが小さい
+    const uint32_t b = g % TRACK_BLOCK;
+    if (b == 0 || e < s_blkE) { s_blkE = e; s_blkG = g; s_blkT = tUs; }
+    if (b != TRACK_BLOCK - 1) return;
+
+    // ブロックの最小の点を、たまった点に加える (古いものから捨てる)
+    if (s_trkN == TRACK_BLOCKS) {
+        memmove(s_trkG, s_trkG + 1, sizeof(s_trkG[0]) * (TRACK_BLOCKS - 1));
+        memmove(s_trkT, s_trkT + 1, sizeof(s_trkT[0]) * (TRACK_BLOCKS - 1));
+        s_trkN--;
+    }
+    s_trkG[s_trkN] = s_blkG;
+    s_trkT[s_trkN] = s_blkT;
+    s_trkN++;
+    if (s_trkN < TRACK_BLOCKS) return;
+
+    // 古い半分と新しい半分で、それぞれ下側の点を選び、傾きを求める
+    const double T = s_periodUs;
+    uint8_t i1 = 0, i2 = TRACK_BLOCKS / 2;
+    double  v1 = 1e300, v2 = 1e300;
+    for (uint8_t i = 0; i < TRACK_BLOCKS; i++) {
+        const double v = (double)(s_trkT[i] - s_trkT[0]) - (double)(s_trkG[i] - s_trkG[0]) * T;
+        if (i < TRACK_BLOCKS / 2) { if (v < v1) { v1 = v; i1 = i; } }
+        else                      { if (v < v2) { v2 = v; i2 = i; } }
+    }
+    const float Tn = (float)((double)(s_trkT[i2] - s_trkT[i1]) / (double)(s_trkG[i2] - s_trkG[i1]));
+    if (fabsf(Tn / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f) s_periodUs = Tn;   // ±2% を超えるのは、おかしい
+}
+
+// サンプルが抜けた: サンプルの番号が数えられなくなるので、間隔を求め直す (今の間隔の見込みは残す)
+static void periodTrackReset()
+{
+    s_trkN  = 0;
+    s_trkG0 = 0;
+}
+
+// フレームの先頭のサンプルを測った時刻 (記録を始めてからの時間 [µs]) と、間隔。
+// 測った時刻 = 読んだ時刻の下側の線 (c + 番号 x 間隔)。c は、このフレームのサンプルと、periodTrack が
+// 集めた最近 (約 1 分) の下側の点の中で、(読んだ時刻 - 番号 x 間隔) が最小のもの。フレームが短くても
+// (電池電圧のフレームで区切られたときなど)、遅れがほぼ 0 の点を使える
+static void fifoTiming(int64_t &firstUs, float &periodUs)
+{
+    const double T = s_periodUs;
+    double c = 1e300;
+    for (uint32_t k = 0; k <= s_n; k++) {
+        const double v = (double)(s_baseUs + s_readUs[k]) - (double)(s_baseG + k) * T;
+        if (v < c) c = v;
+    }
+    for (uint8_t i = 0; i < s_trkN; i++) {
+        const double v = (double)s_trkT[i] - (double)s_trkG[i] * T;
+        if (v < c) c = v;
+    }
+    if (s_trkG0 > 0) {                       // 作りかけのブロックの最小の点
+        const double v = (double)s_blkT - (double)s_blkG * T;
+        if (v < c) c = v;
+    }
+    // 水晶の時計から、記録の時計 (記録を始めてからの時間) へ
+    const int64_t offUs = nowRelUs() - esp_timer_get_time();
+    firstUs  = (int64_t)llround(c + (double)s_baseG * T) + offUs;
+    periodUs = s_periodUs;
+}
+
 static void closeFrame()
 {
     if (!s_open) return;
+    int64_t firstUs;
+    float   periodUs;
+    fifoTiming(firstUs, periodUs);
+    if (firstUs < 0) firstUs = 0;
     s_frame[2] = s_n;
-    writeFrame(s_frame, FRAME_HDR + s_n * 3, s_n + 1);
+    put32(s_frame + 4, (uint32_t)((firstUs + 500) / 1000));
+    put16(s_frame + 13, s_len);
+    put16(s_frame + 15, (uint16_t)lroundf(periodUs));
+    writeFrame(s_frame, FIFO_HDR + s_len, s_n + 1);
     s_open = false;
+}
+
+// サンプルの符号 (TAG_FIFO)。d = 気圧の差。書いたバイト数を返す (詰められなければ 0)
+//   0xxxxxxx                    : d = 7 ビット (-64〜63)
+//   10dddddd dddddddd           : d = 14 ビット (-8192〜8191)
+//   0xC0, d (int16)             : そのほか
+//   0xC1, 温度の差 (int8)       : 温度 [0.01 ℃] を変える (後に続くサンプルの値)
+static uint32_t fifoCode(uint8_t *p, int32_t d)
+{
+    if (d >= -64 && d <= 63) {
+        p[0] = (uint8_t)(d & 0x7F);
+        return 1;
+    }
+    if (d >= -8192 && d <= 8191) {
+        p[0] = (uint8_t)(0x80 | ((d >> 8) & 0x3F));
+        p[1] = (uint8_t)d;
+        return 2;
+    }
+    if (d >= -32768 && d <= 32767) {
+        p[0] = 0xC0;
+        put16(p + 1, (uint16_t)(int16_t)d);
+        return 3;
+    }
+    return 0;
+}
+
+// fifoCode の逆。温度の符号 (0xC1) は、読み飛ばして temp100 に足す。
+// 読んだバイト数を返す (壊れていれば 0)
+static uint32_t unfifoCode(const uint8_t *p, uint32_t left, int32_t &d, int16_t &temp100)
+{
+    uint32_t used = 0;
+    while (left - used >= 2 && p[used] == 0xC1) {
+        temp100 = (int16_t)(temp100 + (int8_t)p[used + 1]);
+        used += 2;
+    }
+    if (used >= left) return 0;
+    const uint8_t b = p[used];
+    if (b < 0x80) {
+        d = (b & 0x40) ? (int32_t)b - 128 : b;
+        return used + 1;
+    }
+    if (b < 0xC0) {
+        if (left - used < 2) return 0;
+        const int32_t v = ((b & 0x3F) << 8) | p[used + 1];
+        d = v >= 8192 ? v - 16384 : v;
+        return used + 2;
+    }
+    if (b == 0xC0) {
+        if (left - used < 3) return 0;
+        d = (int16_t)get16(p + used + 1);
+        return used + 3;
+    }
+    return 0;
+}
+
+// TAG_FIFO の k 番目のサンプルの時刻 [ms] (先頭の時刻 rel0 と、間隔 periodUs [µs] から)
+static uint32_t fifoRel(uint32_t rel0, uint32_t periodUs, uint32_t k)
+{
+    return rel0 + (uint32_t)(((uint64_t)k * periodUs + 500) / 1000);
+}
+
+// TAG_PACK (版 5) のサンプルの符号を読む。dt = 前のサンプルからの時間 [ms]、d = 気圧の差。
+// 温度の符号 (0xC1) は、読み飛ばして temp100 に足す。
+// 読んだバイト数を返す (壊れていれば 0)
+static uint32_t unpackSample(const uint8_t *p, uint32_t left, uint32_t &dt, int32_t &d, int16_t &temp100)
+{
+    uint32_t used = 0;
+    while (left - used >= 2 && p[used] == 0xC1) {
+        temp100 = (int16_t)(temp100 + (int8_t)p[used + 1]);
+        used += 2;
+    }
+    if (used >= left) return 0;
+    const uint8_t b = p[used];
+    if (b < 0x80) {
+        dt = PACK_DT;
+        d  = (b & 0x40) ? (int32_t)b - 128 : b;
+        return used + 1;
+    }
+    if (b < 0xC0) {
+        if (left - used < 2) return 0;
+        const int32_t v = ((b & 7) << 8) | p[used + 1];
+        dt = 32 + ((b >> 3) & 7);
+        d  = v >= 1024 ? v - 2048 : v;
+        return used + 2;
+    }
+    if (b == 0xC0) {
+        if (left - used < 4) return 0;
+        dt = p[used + 1];
+        d  = (int16_t)get16(p + used + 2);
+        return used + 4;
+    }
+    return 0;
 }
 
 // 記録の間隔 [ms]。0 = 毎サンプル (30Hz)。版 3 までの記録は 0
@@ -198,15 +431,39 @@ static bool flushAvg()
     int64_t hpf = (s_accHpf >= 0 ? s_accHpf + n / 2 : s_accHpf - n / 2) / n;
     if (hpf >  0x7FFFFF) hpf =  0x7FFFFF;
     if (hpf < -0x7FFFFF) hpf = -0x7FFFFF;
-    const int32_t t100 = (int32_t)((s_accTemp >= 0 ? s_accTemp + n / 2 : s_accTemp - n / 2) / n);
-    uint8_t f[AVG_FRAME];
-    f[0] = TAG_AVG;
-    f[1] = s_header.session;
-    put32(f + 2, (uint32_t)(s_accRel / (uint64_t)n));
-    put24(f + 6, (uint32_t)((s_accRaw + n / 2) / n));
-    put16(f + 9, (uint16_t)(int16_t)t100);
-    put24(f + 11, (uint32_t)hpf & 0xFFFFFF);
-    writeFrame(f, AVG_FRAME, 1);
+    const int16_t  t100 = (int16_t)((s_accTemp >= 0 ? s_accTemp + n / 2 : s_accTemp - n / 2) / n);
+    const uint32_t rel  = (uint32_t)(s_accRel / (uint64_t)n);
+    const int32_t  raw  = (int32_t)((s_accRaw + n / 2) / n);
+
+    // 前の平均との差が小さければ、差を 8 バイトで書く (TAG_AVGD)。
+    // 時刻は「前 + 記録の間隔」からのずれ、温度は差、変化量はそのまま (16 ビット)
+    const int64_t dRel  = (int64_t)rel - s_avgRel - intervalOf(s_header);
+    const int32_t dRaw  = raw - s_avgRaw;
+    const int32_t dTemp = t100 - s_avgTemp;
+    if (s_avgHave && dRel >= -128 && dRel <= 127 && dRaw >= -32768 && dRaw <= 32767 &&
+        dTemp >= -128 && dTemp <= 127 && hpf >= -32768 && hpf <= 32767) {
+        uint8_t f[AVGD_FRAME];
+        f[0] = TAG_AVGD;
+        f[1] = s_header.session;
+        f[2] = (uint8_t)(int8_t)dRel;
+        put16(f + 3, (uint16_t)(int16_t)dRaw);
+        f[5] = (uint8_t)(int8_t)dTemp;
+        put16(f + 6, (uint16_t)(int16_t)hpf);
+        writeFrame(f, AVGD_FRAME, 1);
+    } else {
+        uint8_t f[AVG_FRAME];
+        f[0] = TAG_AVG;
+        f[1] = s_header.session;
+        put32(f + 2, rel);
+        put24(f + 6, (uint32_t)raw);
+        put16(f + 9, (uint16_t)t100);
+        put24(f + 11, (uint32_t)hpf & 0xFFFFFF);
+        writeFrame(f, AVG_FRAME, 1);
+    }
+    s_avgHave = true;
+    s_avgRel  = rel;
+    s_avgRaw  = raw;
+    s_avgTemp = t100;
     clearAvg();
     return true;
 }
@@ -266,6 +523,8 @@ static void startRecording(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_
     s_battMv    = UINT32_MAX;
     clearAvg();
     s_nextRel   = 0;
+    s_avgHave   = false;
+    s_gap       = true;
     s_full      = false;
     s_recording = true;
     s_rtcMagic  = RTC_MAGIC ^ session;
@@ -293,7 +552,7 @@ static void writeBattery(uint32_t mv)
 {
     if (mv > 0xFFFF) mv = 0xFFFF;
     if (mv == s_battMv) return;
-    if (s_end + BATT_FRAME + FRAME_MAX + BOOT_FRAME > s_part->size) return;   // いっぱいになる直前
+    if (s_end + BATT_FRAME + FIFO_FRAME_MAX + BOOT_FRAME > s_part->size) return;   // いっぱいになる直前
     closeFrame();
     uint8_t b[BATT_FRAME];
     b[0] = TAG_BATT;
@@ -303,11 +562,17 @@ static void writeBattery(uint32_t mv)
     s_battMv = mv;
 }
 
-void devlogPush(int32_t raw, int32_t shift, float tempC, uint32_t batteryMv, int32_t hpf)
+void devlogPush(int32_t raw, int32_t shift, float tempC, uint32_t batteryMv, int32_t hpf, uint8_t age)
 {
+    // センサの測定の間隔は、記録していないときも求め続ける (記録を始めたときから、正しい時刻にする)
+    const int32_t ageUs = (int32_t)lroundf(age * s_periodUs);
+    const int64_t tUs   = esp_timer_get_time() - ageUs;   // 読んだ時刻 (水晶の時計)
+    periodTrack(tUs);
     if (!s_recording) return;
     writeBattery(batteryMv);
-    uint32_t rel = nowRel();
+    // 読んだ時刻。同じときに読んだ値のうち、古いものは、センサの間隔の分だけ前に測ったとする
+    const int64_t readUs = nowRelUs() - ageUs;
+    uint32_t rel = (uint32_t)(readUs > 0 ? readUs / 1000 : 0);
     if (rel < s_lastRel) rel = s_lastRel;
 
     // 記録の間隔が 1 秒以上: 間隔ごとに平均して、1 つのサンプルにする。
@@ -333,41 +598,85 @@ void devlogPush(int32_t raw, int32_t shift, float tempC, uint32_t batteryMv, int
         return;
     }
 
+    // 毎サンプル (センサの間隔): 気圧の差だけを書く。時刻は、フレームを閉じるときに、
+    // 読んだ時刻から求める (fifoTiming)
+    const int16_t t100 = (int16_t)lroundf(tempC * 100.0f);
     if (s_open) {
-        const uint32_t dt = rel - s_lastRel;
-        const int32_t  d  = raw - s_lastRaw;
-        if (s_n < MAX_DELTAS && dt <= 255 && d >= -32768 && d <= 32767 && shift == s_shift) {
-            uint8_t *p = s_frame + FRAME_HDR + s_n * 3;
-            p[0] = (uint8_t)dt;
-            put16(p + 1, (uint16_t)(int16_t)d);
-            s_n++;
-            s_lastRel = rel;
-            s_lastRaw = raw;
-            if (s_n >= MAX_DELTAS) closeFrame();
-            return;
+        const int32_t rUs = (int32_t)(tUs - s_baseUs);
+        const uint32_t k  = s_n + 1;
+        // 見込みより大きく遅れた: サンプルが抜けた (基板が 1 秒以上止まった、など)
+        const bool late = rUs - (s_envUs + (int32_t)lroundf(k * s_periodUs)) > FIFO_GAP_US;
+        // 温度は、変わっていれば、約 1 秒ごとに書き直す
+        uint8_t  code[5];
+        uint32_t c  = 0;
+        bool     ok = !s_gap && !late && s_n < FIFO_MAX && shift == s_shift;
+        if (ok && t100 != s_temp && s_tempAge >= FIFO_TEMP_EVERY) {
+            const int32_t dT = t100 - s_temp;
+            if (dT >= -128 && dT <= 127) {
+                code[0] = 0xC1;
+                code[1] = (uint8_t)(int8_t)dT;
+                c = 2;
+            } else {
+                ok = false;                     // 大きく変わった: 新しいフレームにする
+            }
+        }
+        if (ok) {
+            const uint32_t m = fifoCode(code + c, raw - s_lastRaw);
+            if (m > 0 && s_len + c + m <= FIFO_CODES_MAX) {
+                memcpy(s_frame + FIFO_HDR + s_len, code, c + m);
+                s_len += c + m;
+                s_readUs[k] = rUs;
+                const int32_t env = rUs - (int32_t)lroundf(k * s_periodUs);
+                if (env < s_envUs) s_envUs = env;
+                s_n++;
+                if (c > 0) { s_temp = t100; s_tempAge = 0; }
+                s_tempAge++;
+                s_lastRel = rel;
+                s_lastRaw = raw;
+                if (s_n >= FIFO_MAX) closeFrame();
+                return;
+            }
         }
         closeFrame();
     }
 
     // 新しいフレーム。入りきらなければ、いっぱいで止める
-    if (s_end + FRAME_MAX + BOOT_FRAME > s_part->size) {
+    if (s_end + FIFO_FRAME_MAX + BOOT_FRAME > s_part->size) {
         stopRecording(0);
         s_full = true;
         Serial.println(F("# log: full"));
         return;
     }
-    s_frame[0] = TAG_FRAME;
+    s_frame[0] = TAG_FIFO;
     s_frame[1] = s_header.session;
     s_frame[2] = 0;
     s_frame[3] = (uint8_t)shift;
-    put32(s_frame + 4, rel);
     put24(s_frame + 8, (uint32_t)raw);
-    put16(s_frame + 11, (uint16_t)(int16_t)lroundf(tempC * 100.0f));
-    s_open    = true;
-    s_n       = 0;
-    s_shift   = shift;
-    s_lastRel = rel;
-    s_lastRaw = raw;
+    put16(s_frame + 11, (uint16_t)t100);     // 時刻 (4) と、符号の長さ・間隔 (13、15) は閉じるときに書く
+    s_open      = true;
+    s_gap       = false;
+    s_n         = 0;
+    s_len       = 0;
+    s_temp      = t100;
+    s_tempAge   = 0;
+    s_shift     = shift;
+    s_baseUs    = tUs;
+    s_baseG     = s_trkG0 - 1;              // periodTrack で数えた、このサンプルの番号
+    s_readUs[0] = 0;
+    s_envUs     = 0;
+    s_lastRel   = rel;
+    s_lastRaw   = raw;
+}
+
+void devlogMarkGap()
+{
+    s_gap = true;
+    periodTrackReset();
+}
+
+void devlogFlush()
+{
+    if (s_recording) closeFrame();
 }
 
 // ---------------------------------------------------------------- begin / service
@@ -392,11 +701,52 @@ void devlogBegin(HighPassFilter *hpf)
 
     // フレームをたどって、記録の終わりを探す
     uint32_t off = DATA_START, count = 0, lastRel = 0;
-    uint8_t  h[8];
+    uint8_t  h[FIFO_HDR];
     while (off + BOOT_FRAME <= s_part->size) {
-        esp_partition_read(s_part, off, h, sizeof(h));
+        esp_partition_read(s_part, off, h, 8);
         if (h[1] != s_header.session) break;
-        if (h[0] == TAG_FRAME) {
+        if (h[0] == TAG_FIFO) {
+            if (off + FIFO_HDR > s_part->size) break;
+            esp_partition_read(s_part, off, h, FIFO_HDR);
+            const uint32_t blen = get16(h + 13);
+            if (h[2] > FIFO_MAX || blen > FIFO_CODES_MAX || off + FIFO_HDR + blen > s_part->size) break;
+            uint8_t c[FIFO_CODES_MAX];               // 符号が壊れていないか確かめる
+            esp_partition_read(s_part, off + FIFO_HDR, c, blen);
+            uint32_t pos = 0;
+            int16_t  temp = 0;
+            bool     bad = false;
+            for (uint8_t i = 0; i < h[2]; i++) {
+                int32_t d;
+                const uint32_t used = unfifoCode(c + pos, blen - pos, d, temp);
+                if (used == 0) { bad = true; break; }
+                pos += used;
+            }
+            if (bad) break;
+            lastRel = fifoRel(get32(h + 4), get16(h + 15), h[2]);
+            count += h[2] + 1;
+            off += FIFO_HDR + blen;
+        } else if (h[0] == TAG_PACK) {
+            if (off + PACK_HDR > s_part->size) break;
+            esp_partition_read(s_part, off, h, PACK_HDR);
+            const uint32_t blen = get16(h + 13);
+            if (h[2] > PACK_MAX || blen > PACK_CODES_MAX || off + PACK_HDR + blen > s_part->size) break;
+            uint8_t c[PACK_CODES_MAX];               // 最後のサンプルの rel を求める
+            esp_partition_read(s_part, off + PACK_HDR, c, blen);
+            uint32_t rel = get32(h + 4), pos = 0;
+            int16_t  temp = 0;
+            bool     bad = false;
+            for (uint8_t i = 0; i < h[2]; i++) {
+                uint32_t dt; int32_t d;
+                const uint32_t used = unpackSample(c + pos, blen - pos, dt, d, temp);
+                if (used == 0) { bad = true; break; }
+                pos += used;
+                rel += dt;
+            }
+            if (bad) break;
+            lastRel = rel;
+            count += h[2] + 1;
+            off += PACK_HDR + blen;
+        } else if (h[0] == TAG_FRAME) {
             if (h[2] > MAX_DELTAS) break;
             const uint32_t len = FRAME_HDR + h[2] * 3;
             if (off + len > s_part->size) break;
@@ -417,6 +767,11 @@ void devlogBegin(HighPassFilter *hpf)
             lastRel = get32(h + 2);
             count += 1;
             off += AVG_FRAME;
+        } else if (h[0] == TAG_AVGD) {
+            if (off + AVGD_FRAME > s_part->size) break;
+            lastRel += (int8_t)h[2] + intervalOf(s_header);
+            count += 1;
+            off += AVGD_FRAME;
         } else {
             break;
         }
@@ -428,7 +783,9 @@ void devlogBegin(HighPassFilter *hpf)
 
     // いっぱいで止まった記録か (残りに、次のフレームが入らない)。
     // 止まった理由は保存していないので、残りの大きさから判定する (前の版で記録したものにも効く)
-    s_full = (s_stop.stopped == 0) && (s_end + FRAME_MAX + BOOT_FRAME > s_part->size);
+    const uint32_t frameMax = s_header.version >= 6 ? FIFO_FRAME_MAX :
+                              s_header.version >= 5 ? PACK_FRAME_MAX : FRAME_MAX;
+    s_full = (s_stop.stopped == 0) && (s_end + frameMax + BOOT_FRAME > s_part->size);
 
     // 記録の途中で再起動した: 時計が続いていれば、続きから記録する
     if (s_stop.stopped == 0xFF) {
@@ -498,8 +855,16 @@ uint32_t devlogCapacity()
 {
     if (!s_part) return 0;
     const uint32_t rest = s_part->size > s_end ? s_part->size - s_end : 0;
-    if (devlogIntervalMs() > 0) return devlogCount() + rest / AVG_FRAME;   // 平均 1 つで 14 バイト
-    return devlogCount() + rest * 30 / 100;          // 30 サンプルで約 100 バイト
+    if (s_valid && s_header.version < 5) {           // 前の形式の記録
+        if (devlogIntervalMs() > 0) return devlogCount() + rest / AVG_FRAME;   // 平均 1 つで 14 バイト
+        return devlogCount() + rest * 30 / 100;      // 30 サンプルで約 100 バイト
+    }
+    if (devlogIntervalMs() > 0) return devlogCount() + rest / AVGD_FRAME;      // 平均 1 つで 8 バイト
+    // 1 サンプルのバイト数は、変化の大きさで変わる (約 1.1。大きく変わり続けると、もっと大きい)。
+    // 記録が少ないうちは 1.1 とし、あとは、ここまでの実績から見込む
+    const uint32_t used = s_end - DATA_START;
+    if (s_count < 3000 || used == 0) return devlogCount() + (uint32_t)((uint64_t)rest * 10 / 11);
+    return devlogCount() + (uint32_t)((uint64_t)rest * s_count / used);
 }
 
 uint32_t devlogIntervalMs()
@@ -535,13 +900,18 @@ struct CsvState {
     uint32_t  off = DATA_START, end = DATA_START;
     uint32_t  lines = 0, linesDone = 0;    // 出す行数と、出した行数
     HighPassFilter hpf;
-    uint8_t   frame[FRAME_MAX];
+    uint8_t   frame[READ_FRAME_MAX];
     uint8_t   n = 0, idx = 0;          // 読んでいるフレームの差分の数と、次のサンプル
     bool      inFrame = false;
+    bool      pack = false;                // TAG_PACK のフレーム (符号は frame + PACK_HDR から)
+    bool      fifo = false;                // TAG_FIFO のフレーム (符号は frame + FIFO_HDR から)
+    uint32_t  pos = 0, blen = 0;           // TAG_PACK、TAG_FIFO: 次に読む符号の位置と、符号のバイト数
+    uint32_t  rel0 = 0, period = 0;        // TAG_FIFO: 先頭の時刻 [ms] と、間隔 [µs]
     uint32_t  rel = 0;
     int32_t   raw = 0, shift = 8;
     int16_t   temp100 = 0;
-    bool      avg = false;                 // 平均したサンプル (TAG_AVG)。変化量は avgHpf
+    bool      avg = false;                 // 平均したサンプル (TAG_AVG、TAG_AVGD)。変化量は avgHpf
+    bool      avgHave = false;             // 前の平均がある (TAG_AVGD は、その差)
     int32_t   avgHpf = 0;
     uint32_t  battMv = 0;
     size_t    lineBytes = CSV_LINE_LEN;    // データの 1 行の長さ (版 2 は CSV_LINE_LEN_V2)
@@ -584,13 +954,79 @@ static bool nextSample(CsvState *st)
             st->temp100 = (int16_t)get16(f + 9);
             st->avgHpf  = ((int32_t)(get24(f + 11) << 8)) >> 8;   // 24 ビットの符号を広げる
             st->avg     = true;
+            st->avgHave = true;
+            st->pack    = false;
+            st->fifo    = false;
             st->n       = 0;
             st->idx     = 0;
             st->inFrame = true;
             continue;
         }
+        if (h[0] == TAG_AVGD) {                  // 平均したサンプル (前の平均との差)
+            if (!st->avgHave || st->off + AVGD_FRAME > st->end) return false;
+            uint8_t f[AVGD_FRAME];
+            esp_partition_read(s_part, st->off, f, AVGD_FRAME);
+            st->off    += AVGD_FRAME;
+            st->rel    += (int8_t)f[2] + intervalOf(st->h);
+            st->raw    += (int16_t)get16(f + 3);
+            st->temp100 = (int16_t)(st->temp100 + (int8_t)f[5]);
+            st->avgHpf  = (int16_t)get16(f + 6);
+            st->avg     = true;
+            st->pack    = false;
+            st->fifo    = false;
+            st->n       = 0;
+            st->idx     = 0;
+            st->inFrame = true;
+            continue;
+        }
+        if (h[0] == TAG_FIFO) {
+            if (st->off + FIFO_HDR > st->end) return false;
+            esp_partition_read(s_part, st->off, st->frame, FIFO_HDR);
+            st->n    = st->frame[2];
+            st->blen = get16(st->frame + 13);
+            if (st->n > FIFO_MAX || st->blen > FIFO_CODES_MAX) return false;
+            if (st->off + FIFO_HDR + st->blen > st->end) return false;
+            if (st->blen) esp_partition_read(s_part, st->off + FIFO_HDR, st->frame + FIFO_HDR, st->blen);
+            st->off    += FIFO_HDR + st->blen;
+            st->avg     = false;
+            st->pack    = false;
+            st->fifo    = true;
+            st->pos     = 0;
+            st->shift   = st->frame[3];
+            st->rel0    = get32(st->frame + 4);
+            st->period  = get16(st->frame + 15);
+            st->rel     = st->rel0;
+            st->raw     = (int32_t)get24(st->frame + 8);
+            st->temp100 = (int16_t)get16(st->frame + 11);
+            st->idx     = 0;
+            st->inFrame = true;
+            continue;
+        }
+        if (h[0] == TAG_PACK) {
+            if (st->off + PACK_HDR > st->end) return false;
+            esp_partition_read(s_part, st->off, st->frame, PACK_HDR);
+            st->n    = st->frame[2];
+            st->blen = get16(st->frame + 13);
+            if (st->n > PACK_MAX || st->blen > PACK_CODES_MAX) return false;
+            if (st->off + PACK_HDR + st->blen > st->end) return false;
+            if (st->blen) esp_partition_read(s_part, st->off + PACK_HDR, st->frame + PACK_HDR, st->blen);
+            st->off    += PACK_HDR + st->blen;
+            st->avg     = false;
+            st->pack    = true;
+            st->fifo    = false;
+            st->pos     = 0;
+            st->shift   = st->frame[3];
+            st->rel     = get32(st->frame + 4);
+            st->raw     = (int32_t)get24(st->frame + 8);
+            st->temp100 = (int16_t)get16(st->frame + 11);
+            st->idx     = 0;
+            st->inFrame = true;
+            continue;
+        }
         if (h[0] != TAG_FRAME) return false;
-        st->avg = false;
+        st->avg  = false;
+        st->pack = false;
+        st->fifo = false;
         esp_partition_read(s_part, st->off, st->frame, FRAME_HDR);
         st->n = st->frame[2];
         if (st->n > MAX_DELTAS) return false;
@@ -605,7 +1041,21 @@ static bool nextSample(CsvState *st)
         st->idx     = 0;
         st->inFrame = true;
     }
-    if (st->idx > 0) {
+    if (st->idx > 0 && st->fifo) {
+        int32_t d;
+        const uint32_t used = unfifoCode(st->frame + FIFO_HDR + st->pos, st->blen - st->pos, d, st->temp100);
+        if (used == 0) return false;
+        st->pos += used;
+        st->rel  = fifoRel(st->rel0, st->period, st->idx);
+        st->raw += d;
+    } else if (st->idx > 0 && st->pack) {
+        uint32_t dt; int32_t d;
+        const uint32_t used = unpackSample(st->frame + PACK_HDR + st->pos, st->blen - st->pos, dt, d, st->temp100);
+        if (used == 0) return false;
+        st->pos += used;
+        st->rel += dt;
+        st->raw += d;
+    } else if (st->idx > 0) {
         const uint8_t *p = st->frame + FRAME_HDR + (st->idx - 1) * 3;
         st->rel += p[0];
         st->raw += (int16_t)get16(p + 1);
@@ -802,12 +1252,9 @@ static String csvComment(const CsvState &st)
     return c;
 }
 
-void devlogHandleCsv(AsyncWebServerRequest *req)
+// CSV を作る準備 (書き終えたところまで)。先頭 (BOM、コメント、列の名前) も作る
+static std::shared_ptr<CsvState> makeCsvState()
 {
-    if (!s_part || !s_valid) {
-        req->send(404, "text/plain; charset=utf-8", "記録がありません");
-        return;
-    }
     auto st = std::make_shared<CsvState>();
     st->h    = s_header;
     st->stop = s_stop;
@@ -822,7 +1269,16 @@ void devlogHandleCsv(AsyncWebServerRequest *req)
     st->head  = "\xEF\xBB\xBF";
     st->head += csvComment(*st);
     st->head += CSV_COLUMNS;
+    return st;
+}
 
+void devlogHandleCsv(AsyncWebServerRequest *req)
+{
+    if (!s_part || !s_valid) {
+        req->send(404, "text/plain; charset=utf-8", "記録がありません");
+        return;
+    }
+    auto st = makeCsvState();
     const size_t total = st->head.length() + (size_t)st->lines * st->lineBytes;
     s_dlSent   = 0;
     s_dlTotal  = total;
@@ -862,10 +1318,80 @@ void devlogHandleCsv(AsyncWebServerRequest *req)
     req->send(res);
 }
 
+// ---------------------------------------------------------------- 記録をそのまま送る
+//
+// 表示ページが、受け取った記録から、/log.csv と同じ CSV を作る (通信量は、1/30 秒の記録で約 1/70)。
+// CSV の先頭 (コメントと列の名前) は、基板が作ったものを入れる (MAC アドレス、版などを含むため)
+//   0  "PMLB"
+//   4  形式 (1)
+//   5  データの 1 行の長さ (88。版 2 の記録は 84)
+//   6  予備 (2 バイト)
+//   8  先頭の長さ (uint32)
+//  12  行数 (uint32。コメントの samples と同じ)
+//  16  記録の長さ (uint32。フラッシュの先頭からの位置で、書き終えたところまで)
+//  20  先頭 (BOM、コメント、列の名前。UTF-8)
+//  20 + 先頭の長さ: 記録 (ヘッダのセクタから、書き終えたところまで)
+static const uint32_t BIN_PRE = 20;
+static volatile uint32_t s_binSent   = 0;
+static volatile uint32_t s_binTotal  = 0;
+static volatile uint32_t s_binLastMs = 0;
+
+void devlogHandleBin(AsyncWebServerRequest *req)
+{
+    if (!s_part || !s_valid) {
+        req->send(404, "text/plain; charset=utf-8", "記録がありません");
+        return;
+    }
+    auto st = makeCsvState();
+    auto pre = std::make_shared<std::array<uint8_t, BIN_PRE>>();
+    uint8_t *p = pre->data();
+    memcpy(p, "PMLB", 4);
+    p[4] = 1;
+    p[5] = (uint8_t)st->lineBytes;
+    p[6] = p[7] = 0;
+    put32(p + 8,  st->head.length());
+    put32(p + 12, st->lines);
+    put32(p + 16, st->end);
+    const size_t total = BIN_PRE + st->head.length() + st->end;
+    s_binSent   = 0;
+    s_binTotal  = total;
+    s_binLastMs = millis();
+    Serial.printf("# log: binary download started (%lu bytes)\n", (unsigned long)total);
+
+    AsyncWebServerResponse *res = req->beginResponse("application/octet-stream", total,
+        [st, pre, total](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
+            size_t n = 0;
+            const size_t headEnd = BIN_PRE + st->head.length();
+            while (n < maxLen && index + n < total) {
+                const size_t at = index + n;
+                size_t k;
+                if (at < BIN_PRE) {
+                    k = min(maxLen - n, BIN_PRE - at);
+                    memcpy(buf + n, pre->data() + at, k);
+                } else if (at < headEnd) {
+                    k = min(maxLen - n, headEnd - at);
+                    memcpy(buf + n, st->head.c_str() + (at - BIN_PRE), k);
+                } else {
+                    k = min(maxLen - n, total - at);
+                    esp_partition_read(s_part, at - headEnd, buf + n, k);
+                }
+                n += k;
+            }
+            s_binSent   = index + n;
+            s_binLastMs = millis();
+            if (index + n >= total) Serial.println(F("# log: binary download finished"));
+            return n;
+        });
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
+}
+
 bool devlogDownloading()
 {
     // 送り終わっていない応答が、最近まで進んでいた
-    return s_dlTotal > 0 && s_dlSent < s_dlTotal && (millis() - s_dlLastMs) < 60000;
+    const uint32_t now = millis();
+    return (s_dlTotal > 0 && s_dlSent < s_dlTotal && (now - s_dlLastMs) < 60000) ||
+           (s_binTotal > 0 && s_binSent < s_binTotal && (now - s_binLastMs) < 60000);
 }
 
 void devlogDownloadProgress(uint32_t &sent, uint32_t &total)

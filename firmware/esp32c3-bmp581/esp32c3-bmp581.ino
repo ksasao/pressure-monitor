@@ -226,26 +226,43 @@ static int32_t holdDelta(int32_t hpf, int32_t shift)
     return g_smoothAcc / 256;
 }
 
-// センサを 1 回読んで HPF と LED1 の色を更新し、ログを出す。
+// センサの FIFO にたまった値 (センサが 30Hz で測った値。たいてい 1 個、ときどき 0 個か 2 個) を、
+// 古い順に 1 個ずつ HPF に通して記録する。LED1 の色などの表示は、いちばん新しい値で更新する。
 // logEnabled が false (USB ホストが見えない) ときは、誰も読まないので、ログを出さない
 static void sampleOnce(uint32_t nowMs, bool logEnabled)
 {
-    SensorSample s;
+    SensorSample ss[SENSOR_FIFO_DEPTH];
     uint32_t i2cUs = 0;
-    SensorStatus st = sensorRead(s, i2cUs);
+    SensorFifoStatus fst;
+    const uint8_t count = sensorReadFifo(ss, SENSOR_FIFO_DEPTH, i2cUs, fst);
 
     g_perf.i2c(i2cUs);
-    if (st == SENSOR_I2C_ERROR) g_perf.i2cError();
-    if (st != SENSOR_OK) return;
-
-    portalSetSensor(s.hPa, s.tempC);            // 設定ページの表示用
+    if (fst.status == SENSOR_I2C_ERROR) g_perf.i2cError();
+    // サンプルが抜けたかもしれない: 記録の時刻を、次のサンプルで合わせ直す
+    if (fst.overflow || fst.dropped) devlogMarkGap();
+    if (count == 0) return;                     // まだ測っていない (LED はそのまま)
 
     const SenseParams p = modeSense(currentMode());
-    int32_t hpf   = g_pressureHpf.update(s.raw, p.hpfShift);
-    // 表示に使う変化量。ドライブモードでは、乗り物の中の速いゆれでちらつかないように、
-    // 小さくなるときだけ、ゆっくり戻す
-    int32_t shown = holdDelta(hpf, p.holdShift);
-    CRGB    color = deltaToColor(shown, p.deltaLimit, p.deltaRange);
+    int32_t shown = 0;
+    for (uint8_t i = 0; i < count; i++) {
+        const int32_t hpf = g_pressureHpf.update(ss[i].raw, p.hpfShift);
+        // 表示に使う変化量。ドライブモードでは、乗り物の中の速いゆれでちらつかないように、
+        // 小さくなるときだけ、ゆっくり戻す
+        shown = holdDelta(hpf, p.holdShift);
+        // 設定モードの表示ページのグラフへ (設定モードでなければ何もしない)
+        // (いちばん新しい値は、下で表示の色と一緒に送る)
+        if (i + 1 < count) {
+            const CRGB c = deltaToColor(shown, p.deltaLimit, p.deltaRange);
+            portalPushSample(nowMs, ss[i].raw, shown, c.r, c.g, c.b);
+        }
+        // 基板の中への記録 (記録中だけ)。変化量は、保持する処理の前の値 (毎サンプルの記録の CSV で、
+        // 気圧から求め直す値と同じにするため)。age は、この値のあとに測った値の数 (測った時刻を求める)
+        devlogPush(ss[i].raw, p.hpfShift, ss[i].tempC, batteryLastMilliVolts(), hpf, count - 1 - i);
+    }
+    const SensorSample &s = ss[count - 1];      // いちばん新しい値
+
+    portalSetSensor(s.hPa, s.tempC);            // 設定ページの表示用
+    CRGB color = deltaToColor(shown, p.deltaLimit, p.deltaRange);
 
     // 固定色モードでは、フィルタの出力を明度に反映した色にする (標準モードの感度。
     // modeSense の既定)。履歴は、標準モードと同じく、5 個の LED に流れる
@@ -267,10 +284,6 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     int32_t level = deltaLevel(shown, p.deltaLimit, p.deltaRange);
     if (modeIsSolid(currentMode())) level = (g_set.valMod > 0) ? g_solidLevel : 0;
     soundTick(nowMs, level);
-
-    // 基板の中への記録 (記録中だけ)。変化量は、保持する処理の前の値 (毎サンプルの記録の CSV で、
-    // 気圧から求め直す値と同じにするため)
-    devlogPush(s.raw, p.hpfShift, s.tempC, batteryLastMilliVolts(), hpf);
 
     if (logEnabled) logPressure(nowMs, s, shown, colorPeak(color));
 }

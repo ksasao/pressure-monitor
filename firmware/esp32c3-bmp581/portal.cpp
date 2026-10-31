@@ -157,7 +157,11 @@ static void handleRoot(AsyncWebServerRequest *req)
 {
     if (answerProbe(req)) return;
     s_lastActivityMs = millis();
-    req->send(200, "text/html; charset=utf-8", (const uint8_t *)MONITOR_PAGE_HTML, strlen(MONITOR_PAGE_HTML));
+    // ファームウェアを書き換えたあとに、古いページ (JavaScript) が使われないように、保存させない
+    AsyncWebServerResponse *res = req->beginResponse(200, "text/html; charset=utf-8",
+        (const uint8_t *)MONITOR_PAGE_HTML, strlen(MONITOR_PAGE_HTML));
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
 }
 
 // 基板の中への記録の操作 (表示ページの「記録」「停止」「消去」)。op = start / stop / clear。
@@ -436,6 +440,7 @@ void portalBegin()
     s_server.on("/",       HTTP_GET,  handleRoot);
     s_server.on("/settings", HTTP_GET, handleSettings);
     s_server.on("/log.csv",  HTTP_GET, devlogHandleCsv);
+    s_server.on("/log.bin",  HTTP_GET, devlogHandleBin);   // 記録をそのまま (ページが CSV を作る)
     s_server.on("/log",      HTTP_GET, devlogHandleCsv);   // /log/<ファイル名> (装置の名前を含む)
     s_server.on("/rec",      HTTP_POST, handleRec);
     s_server.on("/exit",     HTTP_POST, handleExit);
