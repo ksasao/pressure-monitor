@@ -113,16 +113,24 @@ static int32_t  s_envUs   = 0;             // 読んだ時刻の下側 (s_readUs
 // 再起動 (設定モードとの切り替え) のあとも使えるように、RTC メモリに残す
 static RTC_NOINIT_ATTR float    s_periodUs;
 static RTC_NOINIT_ATTR uint32_t s_periodMagic;
-static const uint32_t PERIOD_MAGIC = 0x50455244;    // "PERD"
+static const uint32_t PERIOD_MAGIC    = 0x50455244;    // "PERD" (まだ 30Hz の値)
+static const uint32_t PERIOD_MEASURED = 0x5045524D;    // "PERM" (実測した値)
+// 実測したあとは、前の値から、これ以上離れた値は使わない (サンプルの抜けで、数え違えたとみなす)。
+// 温度による変化は、これよりずっと小さく、ゆっくり
+static const float    PERIOD_MAX_STEP = 500e-6f;
 // 間隔を求めるための、読んだ時刻の下側の点 (256 サンプルごとに、遅れが最小のサンプル)。
 // 8 個 (約 68 秒) 集めて、古い 4 個の中の最小と、新しい 4 個の中の最小を結ぶ傾きを、間隔とする
 static const uint32_t TRACK_BLOCK = 256;
 static const uint8_t  TRACK_BLOCKS = 8;
 static int64_t  s_trkG[TRACK_BLOCKS], s_trkT[TRACK_BLOCKS];   // サンプルの番号と、読んだ時刻 [µs]
+static int64_t  s_trkLastT = 0;            // 前のサンプルを読んだ時刻
 static uint8_t  s_trkN = 0;                // たまった点の数
 static uint32_t s_trkG0 = 0;               // 次のサンプルの番号 (抜けたら 0 から)
 static int64_t  s_blkG = 0, s_blkT = 0;    // 作りかけのブロックの最小の点
 static double   s_blkE = 0;
+// 前のフレームの最後のサンプルの時刻 [ms]。次のフレームの先頭を、これより前にしない
+static uint32_t s_prevEndMs = 0;
+static bool     s_prevEndOk = false;
 static bool     s_gap      = true;         // サンプルが抜けたかもしれない (次は新しいフレーム)
 static int16_t  s_temp   = 0;              // フレームの中の今の温度 [0.01 ℃]
 static uint8_t  s_tempAge = 0;             // 温度を書いてからのサンプル数
@@ -229,16 +237,29 @@ static void writeStop(int64_t phoneMs)
     esp_partition_write(s_part, STOP_OFFSET, &s_stop, sizeof(s_stop));
 }
 
+// TAG_FIFO の k 番目のサンプルの時刻 [ms] (先頭の時刻 rel0 と、間隔 periodUs [µs] から)
+static uint32_t fifoRel(uint32_t rel0, uint32_t periodUs, uint32_t k)
+{
+    return rel0 + (uint32_t)(((uint64_t)k * periodUs + 500) / 1000);
+}
+
 // センサの測定の間隔を求める (センサが測った値ごとに呼ぶ。tUs は読んだ時刻 [µs]、基板の水晶の時計)。
 // 読んだ時刻 = 測った時刻 + 遅れ (0〜約 33ms。基板が起きる間隔の分)。基板が起きる間隔 (33ms) と、
 // センサの間隔 (約 33.3ms) が少し違うので、遅れは約 4 秒で 0〜33ms を一巡する (のこぎり波)。
 // そこで、遅れがほぼ 0 のサンプル (読んだ時刻の下側の点) を、離れた 2 か所で探し、その傾きを間隔とする
 static void periodTrack(int64_t tUs)
 {
-    if (s_periodMagic != PERIOD_MAGIC || !(fabsf(s_periodUs / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) {
+    if ((s_periodMagic != PERIOD_MAGIC && s_periodMagic != PERIOD_MEASURED) ||
+        !(fabsf(s_periodUs / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) {
         s_periodUs    = FIFO_PERIOD_NOMINAL_US;
         s_periodMagic = PERIOD_MAGIC;
     }
+    // 読んだ時刻が、見込みより大きく飛んだ: サンプルが抜けた (数え直す)
+    if (s_trkG0 > 0 && tUs - s_trkLastT > (int64_t)s_periodUs + FIFO_GAP_US) {
+        s_trkN  = 0;
+        s_trkG0 = 0;
+    }
+    s_trkLastT = tUs;
     const uint32_t g = s_trkG0++;
     const double   e = (double)tUs - (double)g * s_periodUs;    // 小さいほど、遅れが小さい
     const uint32_t b = g % TRACK_BLOCK;
@@ -266,7 +287,15 @@ static void periodTrack(int64_t tUs)
         else                      { if (v < v2) { v2 = v; i2 = i; } }
     }
     const float Tn = (float)((double)(s_trkT[i2] - s_trkT[i1]) / (double)(s_trkG[i2] - s_trkG[i1]));
-    if (fabsf(Tn / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f) s_periodUs = Tn;   // ±2% を超えるのは、おかしい
+    if (!(fabsf(Tn / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) return;   // ±2% を超えるのは、おかしい
+    if (s_periodMagic == PERIOD_MEASURED && !(fabsf(Tn / s_periodUs - 1.0f) < PERIOD_MAX_STEP)) {
+        // 前の値から大きく離れた: 見落としたサンプルの抜けがあったとみなし、集め直す
+        s_trkN  = 0;
+        s_trkG0 = 0;
+        return;
+    }
+    s_periodUs    = Tn;
+    s_periodMagic = PERIOD_MEASURED;
 }
 
 // サンプルが抜けた: サンプルの番号が数えられなくなるので、間隔を求め直す (今の間隔の見込みは残す)
@@ -309,10 +338,15 @@ static void closeFrame()
     float   periodUs;
     fifoTiming(firstUs, periodUs);
     if (firstUs < 0) firstUs = 0;
+    uint32_t firstMs = (uint32_t)((firstUs + 500) / 1000);
+    if (s_prevEndOk && firstMs <= s_prevEndMs) firstMs = s_prevEndMs + 1;   // 時刻を戻さない
+    const uint16_t per = (uint16_t)lroundf(periodUs);
+    s_prevEndMs = fifoRel(firstMs, per, s_n);
+    s_prevEndOk = true;
     s_frame[2] = s_n;
-    put32(s_frame + 4, (uint32_t)((firstUs + 500) / 1000));
+    put32(s_frame + 4, firstMs);
     put16(s_frame + 13, s_len);
-    put16(s_frame + 15, (uint16_t)lroundf(periodUs));
+    put16(s_frame + 15, per);
     writeFrame(s_frame, FIFO_HDR + s_len, s_n + 1);
     s_open = false;
 }
@@ -370,11 +404,6 @@ static uint32_t unfifoCode(const uint8_t *p, uint32_t left, int32_t &d, int16_t 
     return 0;
 }
 
-// TAG_FIFO の k 番目のサンプルの時刻 [ms] (先頭の時刻 rel0 と、間隔 periodUs [µs] から)
-static uint32_t fifoRel(uint32_t rel0, uint32_t periodUs, uint32_t k)
-{
-    return rel0 + (uint32_t)(((uint64_t)k * periodUs + 500) / 1000);
-}
 
 // TAG_PACK (版 5) のサンプルの符号を読む。dt = 前のサンプルからの時間 [ms]、d = 気圧の差。
 // 温度の符号 (0xC1) は、読み飛ばして temp100 に足す。
@@ -525,6 +554,7 @@ static void startRecording(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_
     s_nextRel   = 0;
     s_avgHave   = false;
     s_gap       = true;
+    s_prevEndOk = false;
     s_full      = false;
     s_recording = true;
     s_rtcMagic  = RTC_MAGIC ^ session;
@@ -600,6 +630,9 @@ void devlogPush(int32_t raw, int32_t shift, float tempC, uint32_t batteryMv, int
 
     // 毎サンプル (センサの間隔): 気圧の差だけを書く。時刻は、フレームを閉じるときに、
     // 読んだ時刻から求める (fifoTiming)
+    // 記録を始めた直後に読んだ値は、始める前に測ったものかもしれない (時刻がマイナスになる)。
+    // 読むまでの遅れは最大 約 35ms なので、始めてから 60ms までに読んだ値 (最大 2 個) は記録しない
+    if (!s_open && s_count == 0 && readUs < 60000) return;
     const int16_t t100 = (int16_t)lroundf(tempC * 100.0f);
     if (s_open) {
         const int32_t rUs = (int32_t)(tUs - s_baseUs);

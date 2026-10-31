@@ -148,6 +148,17 @@ static void factoryReset()
     bootRebootInto(false);
 }
 
+// 短押し: モードの番号を見せる。番号の表示中なら次のモードへ (表示していなければ、今の番号を見せるだけ)
+static void shortPress()
+{
+    if (displayModeNumberActive()) {
+        g_set.mode = (g_set.mode + 1) % MODE_COUNT;
+        g_modeDirty = true;
+        Serial.printf("# mode -> %u (%s)\n", currentMode() + 1, modeName(currentMode()));
+    }
+    displayShowModeNumber(currentMode() + 1, MODE_NUMBER_MS);
+}
+
 static void handleButton()
 {
     switch (g_bootButton.poll()) {
@@ -168,17 +179,50 @@ static void handleButton()
 
         case BTN_SHORT:
             g_holdFeedback = false;
-            // 番号の表示中なら次のモードへ。表示していなければ、今の番号を見せるだけ
-            if (displayModeNumberActive()) {
-                g_set.mode = (g_set.mode + 1) % MODE_COUNT;
-                g_modeDirty = true;
-                Serial.printf("# mode -> %u (%s)\n", currentMode() + 1, modeName(currentMode()));
-            }
-            displayShowModeNumber(currentMode() + 1, MODE_NUMBER_MS);
+            shortPress();
             break;
 
         default:
             break;
+    }
+}
+
+// シリアルからの操作 (BOOT ボタンの操作の代わり。試験や、ボタンを押しにくいときに使う)。
+// 1 行に 1 つのコマンド (大文字・小文字は区別しない)。工場出荷時に戻す操作 (超長押し) はない
+//   settings : 設定モード (Wi-Fi) で再起動する
+//   normal   : 通常モードで再起動する
+//   long     : 長押しと同じ (設定モードと通常モードを切り替える)
+//   short    : 短押しと同じ (モードの番号を見せる。見せている間なら、次のモードへ)
+//   help     : コマンドの一覧
+static void handleSerialCommand()
+{
+    static char    line[24];
+    static uint8_t len = 0;
+    while (Serial.available() > 0) {
+        const int c = Serial.read();
+        if (c < 0) break;
+        if (c != '\r' && c != '\n') {
+            if (len < sizeof(line) - 1) line[len++] = (char)tolower(c);
+            continue;
+        }
+        if (len == 0) continue;
+        line[len] = '\0';
+        len = 0;
+        if (strcmp(line, "settings") == 0) {
+            Serial.println(F("# serial: settings"));
+            bootRebootInto(true);
+        } else if (strcmp(line, "normal") == 0) {
+            Serial.println(F("# serial: normal"));
+            bootRebootInto(false);
+        } else if (strcmp(line, "long") == 0) {
+            Serial.println(F("# serial: long press"));
+            bootRebootInto(!bootIsSettingsMode());
+        } else if (strcmp(line, "short") == 0) {
+            Serial.println(F("# serial: short press"));
+            shortPress();
+        } else {
+            Serial.println(F("# serial commands: settings, normal, long, short, help"));
+        }
     }
 }
 
@@ -369,6 +413,7 @@ void setup()
 void loop()
 {
     handleButton();
+    handleSerialCommand();          // シリアルからの、BOOT ボタンの操作の代わり
 
     // モード番号の表示が終わったら、選んだモードを保存する
     // (押すたびに書かず、フラッシュの書き込みを減らす)

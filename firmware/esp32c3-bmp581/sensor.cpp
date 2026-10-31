@@ -55,6 +55,8 @@ static bool bmpBegin()
 // 30Hz なら、オーバーサンプリングは 32X まで使える (64X 以上は、センサが黙って 4X に下げる)。
 // 1 サンプルのノイズは約 0.14 Pa (50Hz・16X では約 0.18 Pa)。
 // 温度は補正と表示にしか使わないので 1X まで削って、その時間を気圧に回します。
+// FIFO には気圧だけをためる (32 個、約 1 秒分)。気圧と温度の組にすると、16 個 (約 0.5 秒分) しか
+// 入らず、設定モードで処理が止まったときに、値が抜けやすい。温度は、約 1 秒ごとにレジスタから読む。
 // センサの 30Hz は、内蔵の発振器で決まり、実測で約 +0.09% 速い (時刻は devlog.cpp で補正する)
 //
 // [!] BMP5_ODR_30_HZ / BMP5_OVERSAMPLING_* のマクロ名はライブラリの
@@ -85,9 +87,9 @@ static bool bmpConfigure()
         return false;
     }
 
-    // FIFO: 気圧と温度の組 (6 バイト) を、32 個までためる。いっぱいになると、古いものから捨てる
+    // FIFO: 気圧 (3 バイト) を、32 個までためる。いっぱいになると、古いものから捨てる
     bmp5_fifo fifo = {0};
-    fifo.frame_sel      = BMP5_FIFO_PRESS_TEMP_DATA;
+    fifo.frame_sel      = BMP5_FIFO_PRESSURE_DATA;
     fifo.dec_sel        = BMP5_FIFO_NO_DOWNSAMPLING;
     fifo.mode           = BMP5_FIFO_MODE_STREAMING;
     fifo.threshold      = 0;
@@ -121,12 +123,20 @@ static void bmpWarmUp()
 }
 
 // 明らかに異常な値を弾く。I2C が化けた場合にも効く
-static bool isPlausible(const bmp5_sensor_data &d)
+static bool isPlausiblePressure(float pa)
 {
-    float hPa = d.pressure / 100.0f;
-    return (hPa > 300.0f && hPa < 1200.0f &&
-            d.temperature > -40.0f && d.temperature < 85.0f);
+    const float hPa = pa / 100.0f;
+    return hPa > 300.0f && hPa < 1200.0f;
 }
+static bool isPlausibleTemp(float c)
+{
+    return c > -40.0f && c < 85.0f;
+}
+
+// 温度 (約 1 秒ごとにレジスタから読む。FIFO には気圧だけをためるため)
+static const uint8_t TEMP_EVERY = 30;       // 読む間隔 (sensorReadFifo の呼び出し回数)
+static float   s_tempC    = NAN;
+static uint8_t s_tempTick = 0;
 
 static float toAltitude(float hPa)
 {
@@ -159,7 +169,7 @@ bool sensorBegin()
 static void toSample(const bmp5_sensor_data &d, SensorSample &out)
 {
     out.hPa   = d.pressure / 100.0f;        // ライブラリは Pa で返す
-    out.tempC = d.temperature;
+    out.tempC = s_tempC;
     out.altM  = toAltitude(out.hPa);
 
     // BMP581 の気圧レジスタは 1 LSB = 1/64 Pa。float は Pa x 64 を
@@ -172,7 +182,19 @@ uint8_t sensorReadFifo(SensorSample *out, uint8_t maxCount, uint32_t &i2cMicros,
     st = { SENSOR_OK, false, false };
     const uint32_t t0 = micros();
     uint8_t n = 0;
-    int8_t err = s_bmp.getFIFOLength(&n);
+    int8_t err = BMP5_OK;
+    if (isnan(s_tempC) || ++s_tempTick >= TEMP_EVERY) {
+        s_tempTick = 0;
+        bmp5_sensor_data d = {0, 0};
+        err = s_bmp.getSensorData(&d);
+        if (err == BMP5_OK && isPlausibleTemp(d.temperature)) s_tempC = d.temperature;
+    }
+    if (err == BMP5_OK) err = s_bmp.getFIFOLength(&n);
+    if (err == BMP5_OK && n > 0 && isnan(s_tempC)) {   // 温度がまだない (起きない想定): 捨てる
+        s_bmp.flushFIFO();
+        st.dropped = true;
+        n = 0;
+    }
     if (err == BMP5_OK && n > 0) {
         if (n >= SENSOR_FIFO_DEPTH) st.overflow = true;     // いっぱい: 古いものを捨てたかもしれない
         if (n > SENSOR_FIFO_DEPTH) n = SENSOR_FIFO_DEPTH;
@@ -184,9 +206,8 @@ uint8_t sensorReadFifo(SensorSample *out, uint8_t maxCount, uint32_t &i2cMicros,
             const uint8_t from = n > maxCount ? n - maxCount : 0;
             if (from > 0) st.dropped = true;
             for (uint8_t i = from; i < n; i++) {
-                if (!isPlausible(data[i])) {
-                    Serial.printf("# discarded: %.2f hPa, %.2f degC\n",
-                                  data[i].pressure / 100.0f, data[i].temperature);
+                if (!isPlausiblePressure(data[i].pressure)) {
+                    Serial.printf("# discarded: %.2f hPa\n", data[i].pressure / 100.0f);
                     st.status  = SENSOR_IMPLAUSIBLE;
                     st.dropped = true;
                     continue;
