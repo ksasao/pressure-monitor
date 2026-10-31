@@ -6,6 +6,7 @@
 import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.6.0/bundle.js";
 
 const CHIP = "ESP32-C3";
+const TOOL_VERSION = "2026-10-31b";    // この書き込みツール自体の版 (index.html の ?v= と合わせる)
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -39,6 +40,23 @@ function setButtons({ connect, flash, disconnect }) {
   disconnectBtn.disabled = !disconnect;
   eraseAllEl.disabled = !flash;
   releaseEl.disabled = releases.length === 0 || (!connect && !flash);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 書き込みのあと、基板をリセットして、書き込んだファームウェアを起動する。
+// ESP32-C3 の USB (USB-Serial-JTAG) では、RTS でリセット、DTR で BOOT (IO9) を操作する。
+// esptool-js 0.6.0 の after("hard_reset") は、RTS を離すだけでリセットをかけないため、書き込み用の
+// プログラムのまま止まってしまう。そこで、DTR を離した (BOOT を押していない) まま、RTS を 0.1 秒かける。
+// Windows の usbser では、RTS は DTR を書いたときに送られるので、RTS のあとに DTR も書く
+async function resetToApp(t) {
+  await t.setDTR(false);
+  await t.setRTS(true);     // リセット
+  await t.setDTR(false);
+  await sleep(100);
+  await t.setRTS(false);    // 起動 (BOOT は押していないので、書き込んだファームウェアが動く)
+  await t.setDTR(false);
+  await sleep(100);
 }
 
 function selectedRelease() {
@@ -156,12 +174,13 @@ async function flash() {
       },
     });
     barEl.style.width = "100%";
-    log("書き込みが完了しました。基板を再起動します。");
-    await esploader.after("hard_reset");
+    log("書き込みが完了しました。基板をリセットして、起動します (RTS)。");
+    await resetToApp(transport);
     try { await transport.disconnect(); } catch (_) {}
     transport = null;
     esploader = null;
-    setStatus("ok", `バージョン ${r.version} を書き込みました。基板が再起動しない場合は、RESET ボタンを押してください。`);
+    setStatus("ok", `バージョン ${r.version} を書き込みました。基板が再起動しない（LED が点かない）場合は、` +
+                    `RESET ボタンを押すか、USB を抜き差ししてください。`);
   } catch (err) {
     log(`書き込みエラー: ${err?.message || err}`);
     setStatus("error", `書き込みに失敗しました: ${err?.message || err}`);
@@ -191,6 +210,7 @@ disconnectBtn.addEventListener("click", () => disconnect(false));
 window.addEventListener("beforeunload", () => { if (transport) transport.disconnect().catch(() => {}); });
 
 (async () => {
+  log(`書き込みツール ${TOOL_VERSION}`);
   try {
     await loadReleases();
   } catch (err) {
