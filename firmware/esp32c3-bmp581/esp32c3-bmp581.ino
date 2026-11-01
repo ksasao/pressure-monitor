@@ -310,8 +310,7 @@ static void printStatus()
                        li.mode + 1, li.wifiOff ? "off" : "on");
         }
     }
-    statusLine("sensor_period_us", "%.1f (%s)", li.sensorPeriodUs,
-               li.sensorPeriodMeasured ? "measured" : "nominal");
+    statusLine("sensor_period_us", "%.1f (%s)", li.sensorPeriodUs, li.sensorPeriodSource);
     statusLine("end", "ok");
 }
 

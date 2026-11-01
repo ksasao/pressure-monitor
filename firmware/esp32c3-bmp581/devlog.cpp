@@ -110,16 +110,28 @@ static int64_t  s_baseUs  = 0;             // フレームの先頭のサンプ�
 static uint32_t s_baseG   = 0;             // フレームの先頭のサンプルの番号 (periodTrack の番号)
 static int32_t  s_envUs   = 0;             // 読んだ時刻の下側 (s_readUs[k] - k x 間隔 の最小)
 // センサの測定の間隔の見込み [µs]。記録していないときも、ずっと求め続ける (periodTrack)。
-// 再起動 (設定モードとの切り替え) のあとも使えるように、RTC メモリに残す
+// 再起動 (設定モードとの切り替え) のあとも使えるように、RTC メモリに残す。
+// 電源を入れたときは、フラッシュに保存した値 (前に実測した値) から始める (periodInit)。
+// 30Hz の値のままだと、基板ごとの違い (±1% ほど) の分、実測するまでの時刻がずれ、
+// 実測した値に変わったところで、時刻が飛ぶため
 static RTC_NOINIT_ATTR float    s_periodUs;
 static RTC_NOINIT_ATTR uint32_t s_periodMagic;
+static RTC_NOINIT_ATTR uint8_t  s_periodPts;           // 実測した値に使った点の数 (PERIOD_MEASURED のとき)
 static const uint32_t PERIOD_MAGIC    = 0x50455244;    // "PERD" (まだ 30Hz の値)
+static const uint32_t PERIOD_SAVED    = 0x50455253;    // "PERS" (フラッシュに保存した値。まだ実測していない)
 static const uint32_t PERIOD_MEASURED = 0x5045524D;    // "PERM" (実測した値)
 // 実測したあとは、前の値から、これ以上離れた値は使わない (サンプルの抜けで、数え違えたとみなす)。
 // 温度による変化は、これよりずっと小さく、ゆっくり
 static const float    PERIOD_MAX_STEP = 500e-6f;
+// フラッシュに保存した値から、これ以上離れたら、保存し直す (書き込みを減らす)。
+// 保存は、前の保存から PERIOD_SAVE_MIN_US 以上たってから
+static const float    PERIOD_SAVE_STEP   = 100e-6f;
+static const int64_t  PERIOD_SAVE_MIN_US = 600LL * 1000000;   // 10 分
+static float          s_periodSavedUs  = 0;    // フラッシュに保存してある値 (0 = ない)
+static int64_t        s_periodSavedAt  = 0;    // この起動で保存した時刻 [µs] (0 = まだ)
 // 間隔を求めるための、読んだ時刻の下側の点 (256 サンプルごとに、遅れが最小のサンプル)。
-// 8 個 (約 68 秒) 集めて、古い 4 個の中の最小と、新しい 4 個の中の最小を結ぶ傾きを、間隔とする
+// 8 個 (約 68 秒) 集めて、古い 4 個の中の最小と、新しい 4 個の中の最小を結ぶ傾きを、間隔とする。
+// 実測していないときは、2 個 (約 17 秒) たまったところで、仮の値を求め、点が増えるごとに求め直す
 static const uint32_t TRACK_BLOCK = 256;
 static const uint8_t  TRACK_BLOCKS = 8;
 static int64_t  s_trkG[TRACK_BLOCKS], s_trkT[TRACK_BLOCKS];   // サンプルの番号と、読んだ時刻 [µs]
@@ -173,19 +185,32 @@ static int64_t nowEpochMs()
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-static uint32_t nowRel()
+// 記録の時計 (記録を始めてからの時間) は、水晶の時計 (esp_timer_get_time) に、この値を足したもの。
+// 基板の時計 (gettimeofday) からは、記録を始めたときと、再起動して続きから記録するときだけ求める。
+// 基板の時計は、ライトスリープから起きるたびに RTC の時計に合わせ直される (ESP-IDF の
+// esp_set_time_from_rtc)。起動してから最初に眠るまでの間は、起動したときの RTC の時計の
+// 校正が合っていないため、最初に眠ったときに、数十 ms 飛ぶことがある。そのまま記録の時計に使うと、
+// 再起動して続きから記録したとき (電池で動いているとき) に、約 8 秒後のフレームの時刻が飛んでいた
+static int64_t s_relBaseUs = 0;
+
+static void syncRelClock()
 {
-    const int64_t r = nowEpochMs() - s_header.startEpochMs;
-    return r < 0 ? 0 : (uint32_t)r;
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    s_relBaseUs = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec - s_header.startEpochMs * 1000
+                  - esp_timer_get_time();
 }
 
 // 記録を始めてからの時間 [µs]
 static int64_t nowRelUs()
 {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    const int64_t r = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec - s_header.startEpochMs * 1000;
+    const int64_t r = esp_timer_get_time() + s_relBaseUs;
     return r < 0 ? 0 : r;
+}
+
+static uint32_t nowRel()
+{
+    return (uint32_t)(nowRelUs() / 1000);
 }
 
 static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -247,10 +272,43 @@ static uint32_t fifoRel(uint32_t rel0, uint32_t periodUs, uint32_t k)
 // 読んだ時刻 = 測った時刻 + 遅れ (0〜約 33ms。基板が起きる間隔の分)。基板が起きる間隔 (33ms) と、
 // センサの間隔 (約 33.3ms) が少し違うので、遅れは約 4 秒で 0〜33ms を一巡する (のこぎり波)。
 // そこで、遅れがほぼ 0 のサンプル (読んだ時刻の下側の点) を、離れた 2 か所で探し、その傾きを間隔とする
+static bool periodPlausible(float us)
+{
+    return fabsf(us / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f;   // ±2% を超えるのは、おかしい
+}
+
+// 起動したとき: RTC メモリの値が使えなければ (電源を入れたとき)、フラッシュに保存した値から始める
+static void periodInit()
+{
+    s_periodSavedUs = settingsSensorPeriodUs();
+    if (!periodPlausible(s_periodSavedUs)) s_periodSavedUs = 0;
+    const bool rtcOk = (s_periodMagic == PERIOD_MAGIC || s_periodMagic == PERIOD_SAVED ||
+                        s_periodMagic == PERIOD_MEASURED) && periodPlausible(s_periodUs);
+    if (rtcOk) return;
+    if (s_periodSavedUs > 0) {
+        s_periodUs    = s_periodSavedUs;
+        s_periodMagic = PERIOD_SAVED;
+    } else {
+        s_periodUs    = FIFO_PERIOD_NOMINAL_US;
+        s_periodMagic = PERIOD_MAGIC;
+    }
+}
+
+// 8 個の点で実測した値を、フラッシュに保存する (保存した値から PERIOD_SAVE_STEP 以上離れたときだけ)
+static void periodSave(int64_t tUs)
+{
+    if (s_periodSavedUs > 0 && fabsf(s_periodUs / s_periodSavedUs - 1.0f) < PERIOD_SAVE_STEP) return;
+    if (s_periodSavedAt != 0 && tUs - s_periodSavedAt < PERIOD_SAVE_MIN_US) return;
+    flashPrepare();
+    settingsSaveSensorPeriodUs(s_periodUs);
+    s_periodSavedUs = s_periodUs;
+    s_periodSavedAt = tUs;
+}
+
 static void periodTrack(int64_t tUs)
 {
-    if ((s_periodMagic != PERIOD_MAGIC && s_periodMagic != PERIOD_MEASURED) ||
-        !(fabsf(s_periodUs / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) {
+    if ((s_periodMagic != PERIOD_MAGIC && s_periodMagic != PERIOD_SAVED && s_periodMagic != PERIOD_MEASURED) ||
+        !periodPlausible(s_periodUs)) {
         s_periodUs    = FIFO_PERIOD_NOMINAL_US;
         s_periodMagic = PERIOD_MAGIC;
     }
@@ -275,27 +333,36 @@ static void periodTrack(int64_t tUs)
     s_trkG[s_trkN] = s_blkG;
     s_trkT[s_trkN] = s_blkT;
     s_trkN++;
-    if (s_trkN < TRACK_BLOCKS) return;
+    const uint8_t n = s_trkN;
+    if (n < 2) return;
+    // 点が 8 個より少ないとき (仮の値): 30Hz の値のままか、前の仮の値より点が増えたときだけ求める。
+    // フラッシュに保存した値は、仮の値より正確なので、8 個たまるまで使う
+    // (遅れの一巡がブロックより長い基板では、2 個の点の傾きは、遅れの傾きの分だけずれる)
+    if (n < TRACK_BLOCKS &&
+        !(s_periodMagic == PERIOD_MAGIC || (s_periodMagic == PERIOD_MEASURED && n > s_periodPts))) return;
 
     // 古い半分と新しい半分で、それぞれ下側の点を選び、傾きを求める
     const double T = s_periodUs;
-    uint8_t i1 = 0, i2 = TRACK_BLOCKS / 2;
+    uint8_t i1 = 0, i2 = n / 2;
     double  v1 = 1e300, v2 = 1e300;
-    for (uint8_t i = 0; i < TRACK_BLOCKS; i++) {
+    for (uint8_t i = 0; i < n; i++) {
         const double v = (double)(s_trkT[i] - s_trkT[0]) - (double)(s_trkG[i] - s_trkG[0]) * T;
-        if (i < TRACK_BLOCKS / 2) { if (v < v1) { v1 = v; i1 = i; } }
-        else                      { if (v < v2) { v2 = v; i2 = i; } }
+        if (i < n / 2) { if (v < v1) { v1 = v; i1 = i; } }
+        else           { if (v < v2) { v2 = v; i2 = i; } }
     }
     const float Tn = (float)((double)(s_trkT[i2] - s_trkT[i1]) / (double)(s_trkG[i2] - s_trkG[i1]));
-    if (!(fabsf(Tn / FIFO_PERIOD_NOMINAL_US - 1.0f) < 0.02f)) return;   // ±2% を超えるのは、おかしい
-    if (s_periodMagic == PERIOD_MEASURED && !(fabsf(Tn / s_periodUs - 1.0f) < PERIOD_MAX_STEP)) {
-        // 前の値から大きく離れた: 見落としたサンプルの抜けがあったとみなし、集め直す
+    if (!periodPlausible(Tn)) return;
+    if (s_periodMagic == PERIOD_MEASURED && s_periodPts >= TRACK_BLOCKS &&
+        !(fabsf(Tn / s_periodUs - 1.0f) < PERIOD_MAX_STEP)) {
+        // 前の値 (8 個の点で実測した値) から大きく離れた: 見落としたサンプルの抜けがあったとみなし、集め直す
         s_trkN  = 0;
         s_trkG0 = 0;
         return;
     }
     s_periodUs    = Tn;
     s_periodMagic = PERIOD_MEASURED;
+    s_periodPts   = n;
+    if (n >= TRACK_BLOCKS) periodSave(tUs);
 }
 
 // サンプルが抜けた: サンプルの番号が数えられなくなるので、間隔を求め直す (今の間隔の見込みは残す)
@@ -326,8 +393,7 @@ static void fifoTiming(int64_t &firstUs, float &periodUs)
         if (v < c) c = v;
     }
     // 水晶の時計から、記録の時計 (記録を始めてからの時間) へ
-    const int64_t offUs = nowRelUs() - esp_timer_get_time();
-    firstUs  = (int64_t)llround(c + (double)s_baseG * T) + offUs;
+    firstUs  = (int64_t)llround(c + (double)s_baseG * T) + s_relBaseUs;
     periodUs = s_periodUs;
 }
 
@@ -529,6 +595,7 @@ static void startRecording(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_
     s_header.session      = session;
     s_header.tzMin        = (int16_t)tzMin;
     s_header.startEpochMs = epochMs;
+    syncRelClock();
     const HighPassFilter::State st = s_hpf ? s_hpf->getState() : HighPassFilter::State{ 0, 0, false };
     s_header.hpfPrevX = st.prevX;
     s_header.hpfY     = st.y;
@@ -717,6 +784,7 @@ void devlogFlush()
 void devlogBegin(HighPassFilter *hpf)
 {
     s_hpf  = hpf;
+    periodInit();
     s_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
     if (!s_part) {
         Serial.println(F("# log: partition not found (Partition Scheme: No OTA?)"));
@@ -822,6 +890,7 @@ void devlogBegin(HighPassFilter *hpf)
 
     // 記録の途中で再起動した: 時計が続いていれば、続きから記録する
     if (s_stop.stopped == 0xFF) {
+        syncRelClock();
         const esp_reset_reason_t why = esp_reset_reason();
         const bool timeOk = s_rtcMagic == (RTC_MAGIC ^ s_header.session) &&
                             why != ESP_RST_POWERON && why != ESP_RST_BROWNOUT &&
@@ -910,9 +979,12 @@ void devlogGetInfo(DevlogInfo &info)
     info.usedBytes      = s_valid ? s_end : 0;
     info.hasLog         = s_valid;
     info.endReason      = "none";
-    info.sensorPeriodUs       = s_periodMagic == PERIOD_MEASURED || s_periodMagic == PERIOD_MAGIC
-                                ? s_periodUs : FIFO_PERIOD_NOMINAL_US;
+    const bool known = s_periodMagic == PERIOD_MEASURED || s_periodMagic == PERIOD_SAVED ||
+                       s_periodMagic == PERIOD_MAGIC;
+    info.sensorPeriodUs       = known ? s_periodUs : FIFO_PERIOD_NOMINAL_US;
     info.sensorPeriodMeasured = s_periodMagic == PERIOD_MEASURED;
+    info.sensorPeriodSource   = s_periodMagic == PERIOD_MEASURED ? (s_periodPts >= TRACK_BLOCKS ? "measured" : "rough")
+                              : s_periodMagic == PERIOD_SAVED    ? "saved" : "nominal";
     if (!s_valid) return;
     info.version      = s_header.version;
     info.startEpochMs = s_header.startEpochMs;

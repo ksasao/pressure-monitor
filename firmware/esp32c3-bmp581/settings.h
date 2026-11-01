@@ -111,3 +111,7 @@ void   settingsSaveHubLastIp(const String &ip);
 // ブラウンアウト (電源電圧の落ち込みによるリセット) の累計。保存される
 uint32_t settingsBrownoutCount();
 void     settingsAddBrownout();
+
+// センサの測定の間隔 [µs] (devlog.cpp が実測した値)。電源を入れたときに使う。保存していなければ 0
+float settingsSensorPeriodUs();
+void  settingsSaveSensorPeriodUs(float us);

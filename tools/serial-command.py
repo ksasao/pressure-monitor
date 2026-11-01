@@ -142,9 +142,44 @@ def read_line(s, until):
     return None
 
 
+def out_target(out):
+    """--out を、(フォルダ, ファイル名) にする。ファイル名が None なら、表示ページと同じ名前にする。
+    今あるフォルダや、拡張子のない名前はフォルダとみなし、なければ作る (受け取る前に確かめる)"""
+    if not out:
+        return ".", None
+    if os.path.isdir(out) or out.endswith(("/", "\\")) or not os.path.splitext(out)[1]:
+        folder, name = out, None
+    else:
+        folder, name = os.path.dirname(out) or ".", os.path.basename(out)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as e:
+        sys.exit(f"保存先のフォルダを作れません: {folder} ({e.strerror or e})")
+    if not os.access(folder, os.W_OK):
+        sys.exit(f"保存先のフォルダに書き込めません: {folder}")
+    return folder, name
+
+
+def write_file(path, data, data_bin):
+    """ファイルに書く。書けなければ、受け取った記録を今のフォルダに残して終える"""
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        keep = "pressure-monitor_" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".bin"
+        try:
+            with open(keep, "wb") as f:
+                f.write(data_bin)
+            note = f"受け取った記録は {keep} に残しました (python tools/logbin.py {keep} で CSV にできます)"
+        except OSError:
+            note = "基板の記録は消えていないので、保存先を変えて、もう一度 save を送ってください"
+        sys.exit(f"\n{path} に書けません ({e.strerror or e})。{note}")
+
+
 def save(s, args):
     """記録を受け取り (dump)、CSV にして保存する。記録 (/log.bin の形) も残すなら --bin"""
     import logbin
+    folder, name_out = out_target(args.out)
     s.reset_input_buffer()
     if not send(s, "dump", time.time() + 10):
         sys.exit("基板に送れませんでした")
@@ -192,17 +227,15 @@ def save(s, args):
     m = re.search(r",name=([^,\r\n]*)", head)
     name = re.sub(r'[\\/:*?"<>|\s]', "_", m.group(1)) if m and m.group(1) != "unknown" else ""
     fname = f"pressure-monitor_{name + '_' if name else ''}{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-    path = args.out or fname
-    if os.path.isdir(path):
-        path = os.path.join(path, fname)
+    path = os.path.join(folder, name_out or fname)
     if args.bin:
         bpath = os.path.splitext(path)[0] + ".bin"
-        open(bpath, "wb").write(data)
+        write_file(bpath, bytes(data), bytes(data))
         print(f"  記録: {bpath}", flush=True)
     t1 = time.time()
     csv = logbin.bin_to_csv(bytes(data),
                             lambda f: print(f"\r  CSV を作成中 {int(f * 100)}%", end="", flush=True))
-    open(path, "wb").write(csv)
+    write_file(path, csv, bytes(data))
     rows = csv.count(b"\n") - 2
     print(f"\r  CSV: {path} ({len(csv) / 1048576:.1f} MB、{rows:,} 行、作成 {time.time() - t1:.1f} 秒)",
           flush=True)
@@ -227,7 +260,8 @@ def main():
     ap.add_argument("--list", action="store_true", help="シリアルポートの一覧を表示する")
     ap.add_argument("--interval", choices=list(INTERVALS), default="1/30",
                     help="start の記録の間隔 [秒] (既定 1/30。1 と 30 は、その間の平均)")
-    ap.add_argument("--out", help="save の保存先 (ファイル名、またはフォルダ)。既定は今のフォルダ")
+    ap.add_argument("--out", help="save の保存先 (ファイル名、またはフォルダ)。既定は今のフォルダ。"
+                                  "拡張子のない名前はフォルダとみなし、なければ作る")
     ap.add_argument("--bin", action="store_true", help="save で、記録 (/log.bin の形) も .bin で残す")
     ap.add_argument("--yes", action="store_true", help="clear の確認を省く")
     args = ap.parse_args()

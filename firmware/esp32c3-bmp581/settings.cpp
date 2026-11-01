@@ -201,3 +201,20 @@ void settingsAddBrownout()
     p.putUInt("bo", s_brownoutCount);
     p.end();
 }
+
+float settingsSensorPeriodUs()
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, true);
+    const float us = p.getFloat("sper", 0.0f);
+    p.end();
+    return us;
+}
+
+void settingsSaveSensorPeriodUs(float us)
+{
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.putFloat("sper", us);
+    p.end();
+}

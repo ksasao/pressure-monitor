@@ -156,7 +156,8 @@ struct DevlogInfo {
     uint8_t  role, mode;        // 記録したときの役割、表示モード (版 3 から)
     bool     wifiOff;           // Wi-Fi をオフにして記録した
     float    sensorPeriodUs;    // センサの測定の間隔の見込み [µs]
-    bool     sensorPeriodMeasured;   // 実測した値か (false = 30Hz の値のまま)
+    bool     sensorPeriodMeasured;   // 実測した値か (false = 30Hz の値か、保存した値のまま)
+    const char *sensorPeriodSource; // "measured" (実測)、"rough" (実測した仮の値)、"saved" (保存した値)、"nominal" (30Hz)
 };
 void devlogGetInfo(DevlogInfo &info);
 

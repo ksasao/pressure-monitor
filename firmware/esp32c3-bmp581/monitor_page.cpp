@@ -122,6 +122,8 @@ sel('wsel','w',function(v){win=+v;});
 function connect(){
  try{ws=new WebSocket('ws://'+location.host+'/ws');}catch(e){setTimeout(connect,1000);return;}
  ws.binaryType='arraybuffer';
+ // つなぎ直したら、名前を読み直す (ページを開いたまま、別の基板の Wi-Fi につなぎ替えたとき)
+ ws.onopen=loadName;
  ws.onmessage=function(e){if(typeof e.data!=='string')onFrame(e.data);};
  ws.onclose=function(){ws=null;setTimeout(connect,1000);};
  ws.onerror=function(){try{ws.close();}catch(x){}};
@@ -446,15 +448,23 @@ var canFast=!/; wv\)/.test(ua)&&!!(window.fetch&&window.Blob&&window.URL&&URL.cr
  &&DataView.prototype.getBigInt64);
 var fast={busy:false,text:'',at:0};
 function setFast(t){fast.text=t;fast.at=Date.now();recUi();}
-function csvName(){var d=new Date();
- return 'pressure-monitor_'+(devName?devName.replace(/[\\\/:*?"<>|\s]/g,'_')+'_':'')
+// ファイル名: pressure-monitor_<装置の名前>_<日時>.csv。name を渡したら、それを装置の名前にする
+function csvName(name){var d=new Date(),n=name!=null?name:devName;
+ return 'pressure-monitor_'+(n?n.replace(/[\\\/:*?"<>|\s]/g,'_')+'_':'')
   +d.getFullYear()+pad(d.getMonth()+1,2)+pad(d.getDate(),2)+'-'
   +pad(d.getHours(),2)+pad(d.getMinutes(),2)+pad(d.getSeconds(),2)+'.csv';}
 function saveLink(href,fn){
  var a=document.createElement('a');a.href=href;
  // download を付けると、iPhone の Safari では、表として開かずに、ダウンロードの確認が出る
  a.setAttribute('download',fn);document.body.appendChild(a);a.click();a.remove();}
-function saveFast(fn){
+// 記録した装置の名前 (/log.bin の先頭の CSV の 1 行目の name=)。なければ null
+function binName(buf){
+ try{var u=new Uint8Array(buf),hl=new DataView(buf).getUint32(8,true);
+  var m=/,name=([^,\r\n]*)/.exec(new TextDecoder().decode(u.subarray(20,20+hl)));
+  return m&&m[1]!=='unknown'?m[1]:null;}catch(e){return null;}}
+// ファイル名は、受け取った記録の中の名前で決める (ページの名前は、前の基板のままのことがある)
+function saveFast(){
+ var fn=null;
  fast.busy=true;setFast('記録を受信しています...');
  fetch('/log.bin',{cache:'no-store'}).then(function(r){
   if(!r.ok)throw new Error('エラー '+r.status);
@@ -468,6 +478,7 @@ function saveFast(fn){
    return pump();});}
   return pump();
  }).then(function(buf){
+  fn=csvName(binName(buf));
   return binToCsv(buf,function(f){setFast('CSV を作成中（'+Math.floor(100*f)+'%）');});
  }).then(function(blob){
   var url=URL.createObjectURL(blob);saveLink(url,fn);
@@ -476,14 +487,14 @@ function saveFast(fn){
  }).catch(function(e){
   fast.busy=false;setFast('');
   if(confirm('記録を受け取れませんでした（'+e.message+'）。基板が CSV を作る方法（時間がかかります）で保存しますか？'))
-   saveSlow(fn);
+   saveSlow(fn||csvName());
  });
 }
 function saveSlow(fn){saveLink('/log/'+encodeURIComponent(fn),fn);}
 dlA.onclick=function(){
  if(rec.count===0){alert('記録がありません。');return false;}
  if(isIOSCaptive){iosdlg.className='on';return false;}
- if(canFast){if(!fast.busy)saveFast(csvName());return false;}
+ if(canFast){if(!fast.busy)saveFast();return false;}
  // 基板が CSV を作る。大きいときは、時間がかかることを先に知らせる (1 行 88 バイト、約 140KB/秒)。
  // Android のログイン画面では、Chrome で開き直すと速く保存できることを案内する。Android は、
  // インターネットにつながらない Wi-Fi ではなく、モバイルデータ通信で 192.168.4.1 を開こうとするので、
