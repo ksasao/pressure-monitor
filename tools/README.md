@@ -82,7 +82,7 @@ python tools/serial-command.py COM6 status --wait 1
   # status pressure_hpa=1008.9617
   # status temperature_c=27.38
   # status display_mode=1 標準
-  # status sense=limit=50 range=753 hpf_shift=8 trail_step=1 hold_shift=0
+  # status sense=limit=50 range=753 hpf_shift=8 trail_step=1 hold_shift=0 scale=linear
   ...
   # status wifi=off
   # status espnow=off

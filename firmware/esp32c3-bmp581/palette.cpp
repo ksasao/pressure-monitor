@@ -1,5 +1,7 @@
 #include "palette.h"
 
+#include <math.h>
+
 #include "config.h"
 
 // 上昇 (青系) / 下降 (赤橙系)。r, g, b
@@ -60,6 +62,16 @@ int32_t deltaLevel(int32_t delta, int32_t limit, int32_t range)
     else if (range <= limit || a >= range) level = 1000;
     else level = (int32_t)(((int64_t)(a - limit) * 1000) / (range - limit));
     return (delta < 0) ? -level : level;
+}
+
+int32_t deltaLogScale(int32_t delta, int32_t limit, int32_t range)
+{
+    const int32_t a = (delta < 0) ? -delta : delta;
+    if (limit < 1 || range <= limit || a < limit || a >= range) return delta;
+    // 30Hz で数回呼ぶだけなので、float の対数で十分 (ESP32-C3 は FPU がないが、1 回 数十 us)
+    const float k = logf((float)a / (float)limit) / logf((float)range / (float)limit);   // 0〜1
+    const int32_t v = limit + (int32_t)lroundf(k * (float)(range - limit));
+    return (delta < 0) ? -v : v;
 }
 
 CRGB hsvToColorFine(int32_t hueDeg, int32_t satPct, int32_t valPermille)

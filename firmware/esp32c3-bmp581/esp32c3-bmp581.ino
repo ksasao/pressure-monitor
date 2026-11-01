@@ -243,9 +243,9 @@ static void printStatus()
     // 表示モードと、その感度 (標準・ドライブは modes.cpp の値、カスタムは設定の値)
     const SenseParams p = modeSense(currentMode());
     statusLine("display_mode", "%u %s", currentMode() + 1, modeName(currentMode()));
-    statusLine("sense", "limit=%ld range=%ld hpf_shift=%ld trail_step=%ld hold_shift=%ld",
+    statusLine("sense", "limit=%ld range=%ld hpf_shift=%ld trail_step=%ld hold_shift=%ld scale=%s",
                (long)p.deltaLimit, (long)p.deltaRange, (long)p.hpfShift, (long)p.trailStepTicks,
-               (long)p.holdShift);
+               (long)p.holdShift, p.logScale ? "log" : "linear");
 
     // 保存されている設定
     statusLine("settings.custom", "limit=%ld range=%ld hpf_shift=%ld trail_step=%ld",
@@ -488,6 +488,12 @@ static void logPressure(uint32_t nowMs, const SensorSample &s, int32_t hpf, uint
     g_log.writeLine(buf, (size_t)len, nowMs);
 }
 
+// 色や音に使う変化量。色の目盛りが対数のモード (ドライブ) では、deltaLogScale で直す
+static int32_t scaledDelta(int32_t shown, const SenseParams &p)
+{
+    return p.logScale ? deltaLogScale(shown, p.deltaLimit, p.deltaRange) : shown;
+}
+
 // 変化量を、ちらつかないように保持する (ドライブモード)。絶対値が今の値以上になったら、すぐに
 // その値にし (速い変化を遅らせない)、小さくなるときは、約 2^shift サンプルで、ゆっくり戻す。
 // shift = 0 ならそのまま返す。保持しないモードの間も、値を追いかけておく
@@ -529,7 +535,7 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
         // 設定モードの表示ページのグラフへ (設定モードでなければ何もしない)
         // (いちばん新しい値は、下で表示の色と一緒に送る)
         if (i + 1 < count) {
-            const CRGB c = deltaToColor(shown, p.deltaLimit, p.deltaRange);
+            const CRGB c = deltaToColor(scaledDelta(shown, p), p.deltaLimit, p.deltaRange);
             portalPushSample(nowMs, ss[i].raw, shown, c.r, c.g, c.b);
         }
         // 基板の中への記録 (記録中だけ)。変化量は、保持する処理の前の値 (毎サンプルの記録の CSV で、
@@ -541,12 +547,12 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     portalSetSensor(s.hPa, s.tempC);            // 設定ページの表示用
     g_lastHpa   = s.hPa;
     g_lastTempC = s.tempC;
-    CRGB color = deltaToColor(shown, p.deltaLimit, p.deltaRange);
+    CRGB color = deltaToColor(scaledDelta(shown, p), p.deltaLimit, p.deltaRange);
 
     // 固定色モードでは、フィルタの出力を明度に反映した色にする (標準モードの感度。
     // modeSense の既定)。履歴は、標準モードと同じく、5 個の LED に流れる
     if (modeIsSolid(currentMode())) {
-        g_solidLevel = deltaLevel(shown, p.deltaLimit, p.deltaRange);
+        g_solidLevel = deltaLevel(scaledDelta(shown, p), p.deltaLimit, p.deltaRange);
         color = solidColor();
     }
 
@@ -560,7 +566,7 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     portalPushSample(nowMs, s.raw, shown, color.r, color.g, color.b);
     // 音 (Modulino Buzzer をつないでいるときだけ)。LED の色の段階が上がったときに鳴らす。
     // 固定色で、気圧の変化を明度に反映しない (valMod = 0) ときは、色が変わらないので鳴らさない
-    int32_t level = deltaLevel(shown, p.deltaLimit, p.deltaRange);
+    int32_t level = deltaLevel(scaledDelta(shown, p), p.deltaLimit, p.deltaRange);
     if (modeIsSolid(currentMode())) level = (g_set.valMod > 0) ? g_solidLevel : 0;
     soundTick(nowMs, level);
 
@@ -625,11 +631,11 @@ void setup()
         const SenseParams p = modeSense(currentMode());
         Serial.printf("# mode %u (%s)\n", currentMode() + 1, modeName(currentMode()));
         Serial.printf("# tick %lu ms (%lu Hz) / HPF shift %ld / hold shift %ld"
-                      " / limit %ld range %ld (1/64 Pa)\n",
+                      " / limit %ld range %ld (1/64 Pa, %s)\n",
                       (unsigned long)TICK_INTERVAL_MS,
                       1000UL / TICK_INTERVAL_MS,
                       (long)p.hpfShift, (long)p.holdShift,
-                      (long)p.deltaLimit, (long)p.deltaRange);
+                      (long)p.deltaLimit, (long)p.deltaRange, p.logScale ? "log" : "linear");
         Serial.printf("# cpu %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
         batteryMeasure();           // 起動時に 1 回。以降は 1 分ごと
         Serial.println(F("ready."));

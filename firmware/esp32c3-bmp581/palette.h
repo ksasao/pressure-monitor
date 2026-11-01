@@ -7,6 +7,7 @@
  *     変化量が負 (気圧下降): 黒赤 -> 橙 -> 黄橙 -> 白
  *
  * deltaLimit と deltaRange は引数で受け取ります (モードごとに違う。modes.h)。
+ * 対数の目盛りにするときは、deltaLogScale で変化量を直してから渡します (ドライブモード)。
  */
 #pragma once
 
@@ -26,6 +27,11 @@ CRGB hsvToColorFine(int32_t hueDeg, int32_t satPct, int32_t valPermille);
 // 変化量を -1000〜1000 にする (符号は delta と同じ)。|delta| が limit 未満なら 0、
 // range 以上なら ±1000、その間は比例。deltaToColor と同じ範囲で、色ではなく、量がほしいときに使う
 int32_t deltaLevel(int32_t delta, int32_t limit, int32_t range);
+
+// 変化量を、対数の目盛りにする。limit〜range の中で、|delta| / limit の対数に比例する値
+// (limit〜range。符号は delta と同じ) にする。これを deltaToColor や deltaLevel に渡すと、
+// limit から range までの比を、パレットの区間で等分した色になる。limit 未満と range 以上はそのまま
+int32_t deltaLogScale(int32_t delta, int32_t limit, int32_t range);
 
 // 色の RGB のうち、最大の値 (ログの led_value に使う)
 uint8_t colorPeak(const CRGB &c);
