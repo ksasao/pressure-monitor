@@ -1,7 +1,7 @@
 {
   "name": "pressure-monitor (esp32c3-bmp581)",
   "version": "2026-11-01",
-  "commit": "4d5ae15",
+  "commit": "fc3b43e",
   "chipFamily": "ESP32-C3",
   "fqbn": "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_ota",
   "flashMode": "keep",
@@ -32,8 +32,8 @@
     {
       "path": "application.bin",
       "address": 65536,
-      "size": 1373408,
-      "sha256": "998981d0b3b2a706c7afa6dda44d78aa53039932ebd65c70f28f7aa2d781cd09",
+      "size": 1374928,
+      "sha256": "300d995b58e2b7431f821d9e44831a174d8cdd10d19b485dbe3ef72b3fc82b54",
       "source": "esp32c3-bmp581.ino.bin"
     }
   ]
