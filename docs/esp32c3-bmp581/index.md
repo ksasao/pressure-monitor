@@ -13,6 +13,17 @@ Bosch製の高精度気圧センサBMP581を搭載し、気圧の微小な変化
 
 よくあるご質問は、[こちら](faq/)にまとめています。
 
+## 外観
+
+![LED が点灯している基板を斜め上から見たところ](../assets/images/esp32c3-bmp581/image3.jpg)
+
+<p>
+<img src="../assets/images/esp32c3-bmp581/image1.jpg" alt="基板の表面。ESP32-C3 モジュール、5 個の LED、Qwiic コネクタ、USB-C、電源スイッチ" width="49%">
+<img src="../assets/images/esp32c3-bmp581/image2.jpg" alt="基板の裏面。単三電池 2 本用の電池ボックス" width="49%">
+</p>
+
+左が表面、右が裏面（単三電池ボックス）です。
+
 ## 内容物
 
 - 本体基板 × 1
