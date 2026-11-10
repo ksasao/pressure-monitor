@@ -24,8 +24,8 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 
 // ---- ピン割り当て（回路図 V1.1） ----
-static const uint8_t PIN_SDA      = 4;   // BMP581 の SDI
-static const uint8_t PIN_SCL      = 5;   // BMP581 の SCK
+static const uint8_t PIN_SDA      = 4;   // BMP581 の SDI（Qwiic コネクタの SDA と共通）
+static const uint8_t PIN_SCL      = 5;   // BMP581 の SCK（Qwiic コネクタの SCL と共通）
 static const uint8_t PIN_BOOT     = 9;   // BOOT ボタン（押すと LOW）
 static const uint8_t PIN_LED      = 10;  // LED1 の DIN（5 個がデイジーチェーン）
 static const uint8_t PIN_VBAT     = 1;   // 電池電圧を 1/2 に分圧した電圧（ADC）

@@ -14,6 +14,8 @@
 | 電池電圧を読む | `batteryMilliVolts()` | IO1（ADC。電池電圧の 1/2） |
 | 電源の状態を読む | `poweredByUsb()` | IO3（USB で HIGH、電池で LOW） |
 
+Qwiic コネクタは、BMP581 と同じ I2C バス（SDA: IO4、SCL: IO5）につながっています。Qwiic に I2C のセンサなどをつなぐときは、`Wire` をそのまま使えます（`Wire.begin()` は `sensorBegin()` の中で呼んでいます）。BMP581 のアドレス（0x46）と重ならない機器を使ってください。
+
 ## 動作
 
 - 起動したときの気圧を基準にして、そこからの変化を、点灯する LED の数で表示します（1 Pa ごとに 1 個。1 Pa は高さ約 8.5 cm なので、約 9 cm ごとに 1 個）。
