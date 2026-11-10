@@ -78,6 +78,8 @@ Bosch製の高精度気圧センサBMP581を搭載し、気圧の微小な変化
 
 [firmware/esp32c3-bmp581](https://github.com/ksasao/pressure-monitor/tree/main/firmware/esp32c3-bmp581) に Arduino スケッチがあります。必要なライブラリ、ボード設定、調整できるパラメータは README を参照してください。
 
+独自にプログラムを作りたい場合は、[firmware/esp32c3-bmp581-basic](https://github.com/ksasao/pressure-monitor/tree/main/firmware/esp32c3-bmp581-basic) に、気圧と温度、BOOT ボタン、LED、電池電圧、電源の状態（USB か電池か）の使い方をまとめた、短いサンプルがあります。
+
 ## 使い方
 
 ### 表示の見かた

@@ -25,6 +25,7 @@
 pressure-monitor/
 ├── firmware/                  ファームウェア
 │   ├── esp32c3-bmp581/        ESP32-C3 + BMP581 (Arduino スケッチ)
+│   ├── esp32c3-bmp581-basic/  独自に開発する方向けのサンプル (気圧・温度、ボタン、LED、電池電圧、電源の状態)
 │   └── esp32c3-captive-portal-test/   キャプティブポータルの検証用スケッチ
 ├── hardware/                  回路図・基板データ
 │   └── esp32c3-bmp581/
