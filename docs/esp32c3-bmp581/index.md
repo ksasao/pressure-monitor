@@ -3,7 +3,7 @@ layout: default
 title: esp32c3-bmp581
 ---
 
-# BMP581搭載 ESP32-C3 気圧変動可視化開発ボード
+# BMP581搭載 ESP32-C3 気圧ゆらぎセンサ開発ボード
 
 ![手を動かすと、気圧の変化に応じて LED が青やオレンジに光る様子](../assets/images/esp32c3-bmp581/demo.gif)
 
