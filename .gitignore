@@ -19,3 +19,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# 出荷前検査の記録 (tools/shipping-test.py)
+inspection/
