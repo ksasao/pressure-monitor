@@ -1,11 +1,15 @@
 #include "power.h"
 
 #include <Arduino.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 
 #include "config.h"
 #include "boot.h"
 #include "display.h"
+
+// IO3 (TPS2116 の ST) の状態。V1.0 の基板は IO3 が未接続なので、使わない
+static bool s_hasPowerSt = false;
 
 // USB ホストが最後に見えた時刻 [ms]。0 = 起動から見えていない
 static uint32_t s_lastHostSeenMs = 0;
@@ -21,9 +25,50 @@ static bool     s_keepAwake     = false;   // 無線を使っている (送信�
 // 復帰の直後は、FreeRTOS のティックのフックが数回動くまで、isPlugged() が古い
 static const uint32_t SETTLE_AFTER_WAKE_MS = 10;
 
+// IO3 を、内蔵のプルアップ・プルダウンで読む
+static int readPowerStWithPull(gpio_pull_mode_t pull)
+{
+    gpio_set_pull_mode((gpio_num_t)PIN_POWER_ST, pull);
+    delayMicroseconds(200);
+    const int v = digitalRead(PIN_POWER_ST);
+    gpio_set_pull_mode((gpio_num_t)PIN_POWER_ST, GPIO_FLOATING);
+    return v;
+}
+
+void powerBegin()
+{
+    // IO3 がつながっているか (V1.1) を見分ける。ST は、電池のときは Low に引かれ、USB のときは
+    // R13 (1MΩ) で High になる。未接続 (V1.0) なら、内蔵のプルに従って、どちらにも変わる。
+    //   内蔵のプルダウンを外した直後に High   -> USB から給電 (V1.1)
+    //   内蔵のプルアップでも Low               -> 電池から給電 (V1.1)
+    //   プルアップで High、プルダウンで Low    -> 未接続 (V1.0)
+    pinMode(PIN_POWER_ST, INPUT);
+    const int up = readPowerStWithPull(GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode((gpio_num_t)PIN_POWER_ST, GPIO_PULLDOWN_ONLY);
+    delayMicroseconds(200);
+    gpio_set_pull_mode((gpio_num_t)PIN_POWER_ST, GPIO_FLOATING);
+    delayMicroseconds(100);             // 1MΩ x 数 pF で、数 µs で High に戻る
+    const int down = digitalRead(PIN_POWER_ST);
+    s_hasPowerSt = (down == HIGH) || (up == LOW);
+
+    if (s_hasPowerSt) {
+        // 眠っている間に USB の給電が始まったら、すぐに起きる (PC からの接続に間に合わせる)
+        gpio_wakeup_enable((gpio_num_t)PIN_POWER_ST, GPIO_INTR_HIGH_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
+    }
+    Serial.printf("# power: ST (IO3) %s, %s\n", s_hasPowerSt ? "found" : "not connected (V1.0)",
+                  powerUsbPowered() ? "USB" : "battery");
+}
+
+bool powerUsbPowered()
+{
+    return s_hasPowerSt && digitalRead(PIN_POWER_ST) == HIGH;
+}
+
 static bool canSleep(uint32_t nowMs)
 {
     if (!LIGHT_SLEEP_ENABLED || s_disabled) return false;
+    if (powerUsbPowered())                  return false;   // USB から給電 (PC への接続に備える)
     if (bootIsSettingsMode())               return false;   // Wi-Fi が動いている
     if (s_keepAwake)                        return false;   // ESP-NOW / ハブが動いている
     if (nowMs < LIGHT_SLEEP_BOOT_DELAY_MS)  return false;   // 起動の直後

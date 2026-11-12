@@ -232,6 +232,7 @@ static void printStatus()
     statusLine("cpu_mhz", "%lu", (unsigned long)getCpuFrequencyMhz());
     statusLine("battery_mv", "%lu", (unsigned long)batteryLastMilliVolts());
     statusLine("usb_host", "%s", powerHostPresent(now) ? "yes" : "no");
+    statusLine("usb_power", "%s", powerUsbPowered() ? "yes" : "no");     // IO3 (V1.0 の基板は常に no)
 
     // センサ
     statusLine("sensor", "%s", g_sensorReady ? "ok" : "not_found");
@@ -606,6 +607,7 @@ void setup()
     }
 
     g_bootButton.begin();
+    powerBegin();                   // IO3 (TPS2116 の ST) で、USB の給電を見る
 
     // 白の点灯を、最低でも BOOT_WHITE_MS は見せてから、自己診断に進む
     while ((millis() - whiteStartMs) < BOOT_WHITE_MS) delay(10);

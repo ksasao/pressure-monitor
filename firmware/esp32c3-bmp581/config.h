@@ -19,6 +19,8 @@ static const uint8_t PIN_SDA  = 4;    // U2 IO4  -> U1 SDI
 static const uint8_t PIN_SCL  = 5;    // U2 IO5  -> U1 SCK
 static const uint8_t PIN_BOOT = 9;    // U2 IO9  (タクトスイッチ, active low)
 static const uint8_t PIN_VBAT = 1;    // U2 IO1  (ADC1_CH1) 電池電圧の分圧
+static const uint8_t PIN_POWER_ST = 3; // U2 IO3 <- U3 ST (USB から給電で High、電池で Low。R13 1MΩ でプルアップ)。
+                                       // V1.0 の基板は未接続 (power.cpp が起動時に見分ける)
 
 static const uint8_t NUM_LEDS = 5;
 
