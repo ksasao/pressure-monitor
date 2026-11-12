@@ -7,4 +7,4 @@
  */
 #pragma once
 
-#define FIRMWARE_VERSION "2026-11-01"
+#define FIRMWARE_VERSION "2026-11-12"
