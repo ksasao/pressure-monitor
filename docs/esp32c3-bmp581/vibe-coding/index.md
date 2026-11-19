@@ -30,7 +30,7 @@ AI が正しいコードを書けるように、この基板の情報（ピン�
 
 元のファームウェアで基板の中に記録したデータがある場合は、先に CSV で保存してください。独自のファームウェアを書き込むと、記録が消えることがあります。設定（明るさなど）は、通常は残ります。
 
-### 2. サンプルを書き込んで、動くことを確かめる
+### 2. サンプルで動作を確かめる
 
 まず、[サンプル（esp32c3-bmp581-basic）](https://github.com/ksasao/pressure-monitor/tree/main/firmware/esp32c3-bmp581-basic)を、Arduino IDE で書き込みます。ボードは「ESP32C3 Dev Module」、**「USB CDC On Boot」は「Enabled」**にします。
 

@@ -17,7 +17,7 @@ title: pressure-monitor
 |---|---|---|---|
 | [esp32c3-bmp581](esp32c3-bmp581/) | ESP32-C3 | BMP581 | 動作確認済み |
 
-esp32c3-bmp581 版については、[よくある質問](esp32c3-bmp581/faq/)もご覧ください。
+esp32c3-bmp581 版をはじめて使うときは、[クイックスタート](esp32c3-bmp581/quickstart/)をご覧ください。計測の例は[ギャラリー](esp32c3-bmp581/gallery/)に、よくあるご質問は[よくある質問](esp32c3-bmp581/faq/)にまとめています。
 
 ## ソースコード
 
