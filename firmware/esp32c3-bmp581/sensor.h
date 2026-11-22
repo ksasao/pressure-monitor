@@ -34,3 +34,6 @@ struct SensorFifoStatus {
 // FIFO にたまった値を全て読む (センサは 30Hz で測る)。古い順に out に入れ、個数を返す (0 もある)。
 // i2cMicros には、読み取りにかかった時間 [µs] が入る (失敗時も)
 uint8_t sensorReadFifo(SensorSample *out, uint8_t maxCount, uint32_t &i2cMicros, SensorFifoStatus &st);
+
+// センサを止める (ディープスリープに入る前。消費電流を減らす)。起こすのは、再起動 (sensorBegin) だけ
+void sensorSleep();

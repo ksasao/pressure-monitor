@@ -226,3 +226,10 @@ uint8_t sensorReadFifo(SensorSample *out, uint8_t maxCount, uint32_t &i2cMicros,
     }
     return n;
 }
+
+void sensorSleep()
+{
+    if (s_addr == 0) return;
+    const int8_t err = s_bmp.setMode(BMP5_POWERMODE_DEEP_STANDBY);
+    if (err != BMP5_OK) Serial.printf("# sensor: deep standby failed (%d)\n", err);
+}

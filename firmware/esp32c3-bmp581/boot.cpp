@@ -31,6 +31,11 @@ bool bootWasBrownout()
     return s_resetReason == ESP_RST_BROWNOUT;
 }
 
+bool bootWasPowerOn()
+{
+    return s_resetReason == ESP_RST_POWERON;
+}
+
 const char *bootResetReasonName()
 {
     switch (s_resetReason) {

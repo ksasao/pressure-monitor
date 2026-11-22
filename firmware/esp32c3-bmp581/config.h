@@ -117,6 +117,36 @@ static const uint32_t BATTERY_DIVIDER     = 2;       // R9 = R10 = 1MΩ
 static const uint8_t  BATTERY_SAMPLES     = 16;      // 平均する回数
 static const uint32_t BATTERY_PRESENT_MV  = 1000;    // これ未満は電池なしとみなす
 
+// 電池切れの前に、自動で止める (battery.h)。判定には、1 分ごとに測った電圧の、最近
+// BATTERY_MEDIAN_N 回の中央値を使う (LED の点灯で一時的に下がった値や、ADC のノイズを除く)。
+//   電池が少ない : BATTERY_LOW_MV 未満、または BATTERY_SLOPE_GATE_MV 未満で、
+//                  1 時間あたり BATTERY_SLOPE_MV_PER_H より速く下がっている。LED5 で知らせる
+//   電池切れ     : BATTERY_EMPTY_MV 未満。記録を「電池切れ」として閉じ、ディープスリープに入る
+// 2026-10〜11 の記録 (46 本) で決めた値。EBL (ニッケル水素) の普段の使い方では、2.30 V を
+// 下回ってから止まるまで、2.1〜14.4 時間あった。止まらなかった記録で、2.30 V の判定が
+// 働いたものはなかった。
+// 電流の大きい使い方 (設定モード、無線、明るい固定色) では、電圧が大きく下がり、電池切れの
+// 直前に急に落ちるので、判定の電圧を BATTERY_HEAVY_OFFSET_MV だけ上げる。
+// 電池を入れたとき (電源を入れたとき) に BATTERY_NIZN_DETECT_MV 以上なら、ニッケル亜鉛と
+// みなし、判定の電圧を _NIZN の値にする (高い電圧のまま、急に止まるため)
+static const uint8_t  BATTERY_MEDIAN_N          = 5;
+static const uint8_t  BATTERY_MIN_READINGS      = 3;      // これだけ測るまでは判定しない
+static const uint32_t BATTERY_LOW_MV            = 2350;
+static const uint32_t BATTERY_EMPTY_MV          = 2300;
+static const uint32_t BATTERY_LOW_MV_NIZN       = 3100;
+static const uint32_t BATTERY_EMPTY_MV_NIZN     = 3000;
+static const uint32_t BATTERY_NIZN_DETECT_MV    = 3350;
+static const uint32_t BATTERY_HEAVY_OFFSET_MV   = 50;
+static const uint32_t BATTERY_SLOPE_GATE_MV     = 70;     // 「電池が少ない」の電圧 + この値の未満で
+static const int32_t  BATTERY_SLOPE_MV_PER_H    = -120;   // 1 時間あたり、これより速く下がったら
+static const uint8_t  BATTERY_SLOPE_SPAN_MIN    = 30;     // 下がる速さを求める間隔 [分]
+// 固定色モードで、明度の設定 (val、%) がこれ以上なら、電流の大きい使い方とみなす
+static const int32_t  BATTERY_HEAVY_SOLID_VAL   = 30;
+
+// 電源を入れたとき (RESET を押したときを含む) に、電池がこれ未満なら、起動せずに、
+// 電池切れの合図を出してディープスリープに戻る。LED は消えているので、電流の小さい値で比べる
+static const uint32_t BATTERY_BOOT_WAIT_USB_MS  = 1500;   // その前に、USB ホストを待つ時間
+
 // ------------------------------------------------------------- recording
 // 基板の中への記録 (devlog.h) の状態を、LED5 の点滅で知らせる。
 //   記録中             : USB_PROBE_INTERVAL_MS (5 秒) ごとに、赤で REC_BLINK_MS だけ 1 回点灯
@@ -135,6 +165,21 @@ static const uint32_t REC_BLINK_RADIO_MS = 2 * REC_BLINK_MS;
 #define REC_COLOR_RECORDING CRGB(80, 0, 0)     // 赤
 #define REC_COLOR_RADIO     CRGB(0, 40, 80)    // 水色 (無線ありの記録中の後半)
 #define REC_COLOR_FULL      CRGB(80, 45, 0)    // 黄色 (WS2812B は緑が強いので、緑を控えめに)
+
+// 電池の状態も、LED5 の点滅で知らせる。色が見分けにくい人でも分かるように、記録の点滅
+// (短い点灯) とは、点灯の長さと回数も変える。
+//   電池が少ない : USB_PROBE_INTERVAL_MS (5 秒) ごとに、紫で LOWBAT_BLINK_MS だけ、長く 1 回。
+//                  記録の点滅と重ならないように、LOWBAT_BLINK_AT_MS だけずらす
+//   電池切れ     : 紫で、長く 3 回 (LOWBAT_BLINK_MS 点灯、LOWBAT_GAP_MS 消灯)。そのあと消えて、
+//                  ディープスリープに入る。電源を入れ直したときに、電池が足りないときも同じ
+// 電池が少ないときの点灯は、LED5 だけ、明るさも控えめにする (電流で電圧が下がらないように)
+static const uint32_t LOWBAT_BLINK_AT_MS = 2500;
+static const uint32_t LOWBAT_BLINK_MS    = 600;
+static const uint32_t LOWBAT_GAP_MS      = 400;
+#define REC_COLOR_LOWBAT    CRGB(60, 0, 70)    // 紫 (赤や黄色と見分けやすいように、青を含める)
+static_assert(LOWBAT_BLINK_AT_MS >= 3 * REC_BLINK_MS &&
+              LOWBAT_BLINK_AT_MS + LOWBAT_BLINK_MS <= USB_PROBE_INTERVAL_MS,
+              "the low battery blink must not overlap the recording blink");
 
 // ------------------------------------------------------------ BOOT button
 // BOOT ボタンの長押しと判定する時間

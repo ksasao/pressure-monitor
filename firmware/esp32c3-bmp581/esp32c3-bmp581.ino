@@ -231,6 +231,11 @@ static void printStatus()
     statusLine("free_heap", "%lu", (unsigned long)ESP.getFreeHeap());
     statusLine("cpu_mhz", "%lu", (unsigned long)getCpuFrequencyMhz());
     statusLine("battery_mv", "%lu", (unsigned long)batteryLastMilliVolts());
+    {
+        char b[128];
+        batteryDescribe(b, sizeof(b));
+        statusLine("battery", "%s", b);
+    }
     statusLine("usb_host", "%s", powerHostPresent(now) ? "yes" : "no");
     statusLine("usb_power", "%s", powerUsbPowered() ? "yes" : "no");     // IO3 (V1.0 の基板は常に no)
 
@@ -407,6 +412,7 @@ static void serialRecStart(char *args[3])
 //   stop <時刻 ms> : 記録を止める (PC の時計で、基板の時計のずれを補正する)
 //   clear    : 記録を消去する
 //   dump     : 記録を /log.bin と同じ形で送る (serialDump。PC で CSV に戻す: tools/serial-command.py)
+//   batsim <mV> : 試験用。電池電圧の代わりに、この値を使う (0 でやめる)。電池切れの動作を確かめる
 //   help     : コマンドの一覧
 static void handleSerialCommand()
 {
@@ -453,9 +459,16 @@ static void handleSerialCommand()
             shortPress();
         } else if (strcmp(cmd, "status") == 0) {
             printStatus();
+        } else if (strcmp(cmd, "batsim") == 0) {
+            // 試験用: 電池電圧の代わりに、この値 [mV] を使う (0 でやめる)。すぐに判定する
+            const long mv = args[0] ? strtol(args[0], nullptr, 10) : 0;
+            batterySimulate(mv > 0 ? (uint32_t)mv : 0);
+            Serial.printf("# battery: simulate %ld mV\n", mv > 0 ? mv : 0L);
+            g_lastBatMs = millis() - BATTERY_INTERVAL_MS;   // 次のティックで測って判定する
         } else {
             Serial.println(F("# serial commands: settings, normal, long, short, status, "
-                             "start <interval_ms> <epoch_ms> <tz_min>, stop <epoch_ms>, clear, dump, help"));
+                             "start <interval_ms> <epoch_ms> <tz_min>, stop <epoch_ms>, clear, dump, "
+                             "batsim <mV> (0 = off), help"));
         }
     }
 }
@@ -574,12 +587,67 @@ static void sampleOnce(uint32_t nowMs, bool logEnabled)
     if (logEnabled) logPressure(nowMs, s, shown, colorPeak(color));
 }
 
+// ---------------------------------------------------------------- battery
+
+// 電流の大きい使い方か (電池切れの判定の電圧を上げる)。設定モード (Wi-Fi)、無線 (送信・ハブ)、明るい固定色
+static bool heavyLoad()
+{
+    return bootIsSettingsMode() || linkRadioOn() ||
+           (modeIsSolid(currentMode()) && g_set.val >= BATTERY_HEAVY_SOLID_VAL);
+}
+
+// 電池切れ: 記録を閉じ、LED5 を紫で長く 3 回点滅して、ディープスリープに入る (戻らない)
+static void lowBatteryShutdown(uint32_t mv)
+{
+    Serial.printf("# battery: empty (%lu mV) -> stop and deep sleep\n", (unsigned long)mv);
+    if (devlogRecording()) devlogStopLowBattery();
+    for (uint8_t i = 0; i < 3; i++) {
+        displayShowLastOnly(REC_COLOR_LOWBAT);
+        delay(LOWBAT_BLINK_MS);
+        displayShowLastOnly(CRGB::Black);
+        delay(LOWBAT_GAP_MS);
+    }
+    displayFill(CRGB::Black);
+    sensorSleep();
+    powerDeepSleep();
+}
+
+// 起動したときの電池の確認。足りなければ、起動せずにディープスリープに戻る (電池切れの合図を出して)。
+// 電圧が下がった電池で、起動と停止を繰り返さないように。USB から給電されているときは確かめない
+static void bootBatteryCheck()
+{
+    batteryMeasure();
+    const uint32_t mv = batteryLastMilliVolts();
+    if (!batteryPresent(mv) || powerUsbPowered() || mv >= batteryEmptyMv(false)) return;
+    // V1.0 の基板は、USB の給電が分からないので、PC が見えるかを少し待つ
+    const uint32_t t0 = millis();
+    while (millis() - t0 < BATTERY_BOOT_WAIT_USB_MS) {
+        if (Serial.isPlugged()) return;
+        delay(10);
+    }
+    Serial.printf("# battery: too low to start (%lu mV < %lu mV)\n", (unsigned long)mv,
+                  (unsigned long)batteryEmptyMv(false));
+    lowBatteryShutdown(mv);
+}
+
+// 1 分ごと (電池電圧を測ったあと)。電池切れなら止める
+static void handleBattery(uint32_t nowMs)
+{
+    // USB から給電されている間は判定しない (試験の値を使うときは、USB につないだままでも判定する)
+    const bool skip = (powerUsbPowered() || powerHostPresent(nowMs)) && !batterySimulating();
+    if (batteryUpdate(heavyLoad(), skip) == BATTERY_LEVEL_EMPTY) {
+        lowBatteryShutdown(batteryLastMilliVolts());
+    }
+}
+
 // ---------------------------------------------------------------- setup
 
 void setup()
 {
     // 再起動の理由と、設定モードへ入る指示かどうかを、最初に確認する
     bootDetect();
+    powerReleaseHolds();            // 電池切れのディープスリープで、Low に保った LED のデータ線を離す
+    batteryBegin(bootWasPowerOn()); // 電源を入れたときだけ、電池の種類を見分け直す
 
     // CPU クロックは、Serial / I2C / FastLED の初期化より前に決める。
     // Wi-Fi は 80MHz 以上が必要なので、設定モードのときだけ上げる
@@ -618,6 +686,7 @@ void setup()
     // 通常モードでは、役割が送信・ハブのときだけ、無線を起動する (link.h)
     // 基板の中への記録 (devlog.h)。記録の途中で再起動したときは、続きから記録する
     devlogBegin(&g_pressureHpf);
+    bootBatteryCheck();             // 電池が足りなければ、ここでディープスリープに戻る
 
     if (bootIsSettingsMode()) {
         portalBegin();
@@ -716,6 +785,8 @@ void loop()
         //   記録中 (無線あり)  : 前半を赤、後半を水色 (0〜REC_BLINK_RADIO_MS)
         //   いっぱいで止まった : 黄色で 2 回 (0〜REC_BLINK_MS と、2〜3 x REC_BLINK_MS)。
         //                        記録を消去するか、新しく記録を始めるまで続ける
+        //   電池が少ない       : 紫で、長く 1 回 (LOWBAT_BLINK_AT_MS から LOWBAT_BLINK_MS)。
+        //                        記録の点滅と重ならないので、両方を見分けられる
         const uint32_t phase = now % USB_PROBE_INTERVAL_MS;
         bool blink = false;
         CRGB blinkColor;
@@ -729,6 +800,12 @@ void loop()
         } else if (devlogFull()) {
             blink      = phase < REC_BLINK_MS || (phase >= 2 * REC_BLINK_MS && phase < 3 * REC_BLINK_MS);
             blinkColor = REC_COLOR_FULL;
+        }
+        // 電池が少ない: 紫で、長く 1 回 (記録の点滅から LOWBAT_BLINK_AT_MS ずらす)
+        if (batteryLevel() == BATTERY_LEVEL_LOW &&
+            phase >= LOWBAT_BLINK_AT_MS && phase < LOWBAT_BLINK_AT_MS + LOWBAT_BLINK_MS) {
+            blink      = true;
+            blinkColor = REC_COLOR_LOWBAT;
         }
         if (bootIsSettingsMode()) {
             displaySetStatus(true, blink ? blinkColor
@@ -745,6 +822,7 @@ void loop()
     if (now - g_lastBatMs >= BATTERY_INTERVAL_MS) {
         g_lastBatMs = now;
         batteryMeasure();
+        handleBattery(now);         // 電池切れなら、ここで止まる
     }
 
     if (hostPresent) g_perf.report(now, g_log);

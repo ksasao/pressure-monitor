@@ -60,3 +60,11 @@ void powerIdle(uint32_t nowMs, uint32_t remainingMs);
 
 // 以後、ライトスリープに入らない (無線を使う、送信・ハブの役割のとき)
 void powerKeepAwake();
+
+// ディープスリープに入る (戻らない)。電池切れのとき。LED のデータ線を Low に保ち、
+// V1.1 の基板では、USB の給電が始まったら起きる (IO3)。ほかに起こすのは、RESET ボタンと、
+// 電源の入れ直し。BOOT ボタン (IO9) では起きない (ESP32-C3 は、IO0〜IO5 でしか起きられない)
+void powerDeepSleep();
+
+// 起動の最初に呼ぶ。ディープスリープの間、Low に保っていた LED のデータ線を離す
+void powerReleaseHolds();

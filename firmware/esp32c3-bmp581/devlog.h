@@ -132,6 +132,9 @@ void devlogRequestStart(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_t i
 void devlogRequestStop(int64_t epochMs);
 void devlogRequestClear();
 
+// 電池切れの前に、記録を止める (ループから呼ぶ。すぐに止める)。記録の終わり方は "low_battery" になる
+void devlogStopLowBattery();
+
 bool     devlogAvailable();               // 記録の領域 (パーティション spiffs) がある
 bool     devlogRecording();
 bool     devlogFull();                    // いっぱいで止まった
@@ -149,7 +152,7 @@ struct DevlogInfo {
     int64_t  startEpochMs;      // 記録を始めた時刻 (スマホの時計、UNIX 時刻 [ms])
     int16_t  tzMin;             // 記録を始めたときのスマホのタイムゾーン (Date.getTimezoneOffset())
     uint32_t intervalMs;        // 記録の間隔。0 = 毎サンプル
-    const char *endReason;      // "recording"、"stopped"、"full"、"power_loss"、"none" (記録なし)
+    const char *endReason;      // "recording"、"stopped"、"full"、"power_loss"、"low_battery"、"none" (記録なし)
     uint32_t samples;           // 記録したサンプル数
     uint32_t capacity;          // 記録できるサンプル数の見込み (記録した数を含む)
     char     name[NODE_NAME_MAX + 1];   // 記録したときの装置の名前 (版 3 から)

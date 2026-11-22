@@ -167,6 +167,13 @@ void displayFill(const CRGB &c)
     showRaw();
 }
 
+void displayShowLastOnly(const CRGB &c)
+{
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    leds[NUM_LEDS - 1] = c;
+    showRaw();
+}
+
 void displayWait()
 {
     FastLED.wait(5);        // 送信の完了を待つ (最大 5ms)。通常は 0.5ms 以内

@@ -81,7 +81,8 @@ static_assert(sizeof(LogHeader) <= STOP_OFFSET, "header too large");
 
 struct __attribute__((packed)) StopInfo {
     uint8_t  stopped;           // 0xFF = 記録中、0 = 停止した
-    uint8_t  pad[3];
+    uint8_t  reason;            // 止まった理由。STOP_REASON_LOW_BATTERY = 電池切れの前に止めた。0xFF = ほか
+    uint8_t  pad[2];
     uint32_t stopRelMs;         // 停止したときの rel
     int64_t  stopPhoneMs;       // 停止したときのスマホの時計。-1 = なし (補正しない)
 };
@@ -252,10 +253,13 @@ static void writeFrame(const uint8_t *data, uint32_t len, uint32_t samples)
     portEXIT_CRITICAL(&s_mux);
 }
 
-static void writeStop(int64_t phoneMs)
+static const uint8_t STOP_REASON_LOW_BATTERY = 0x4C;   // 'L'
+
+static void writeStop(int64_t phoneMs, uint8_t reason = 0xFF)
 {
     memset(&s_stop, 0xFF, sizeof(s_stop));
     s_stop.stopped     = 0;
+    s_stop.reason      = reason;
     s_stop.stopRelMs   = s_recording ? max(nowRel(), s_lastRel) : s_lastRel;   // スマホの時計と同じ時点
     s_stop.stopPhoneMs = phoneMs > 0 ? phoneMs : -1;
     flashPrepare();
@@ -565,17 +569,18 @@ static bool flushAvg()
 
 // ---------------------------------------------------------------- record
 
-static void stopRecording(int64_t phoneMs)
+static void stopRecording(int64_t phoneMs, uint8_t reason = 0xFF)
 {
     if (!s_recording) return;
     closeFrame();
     flushAvg();                     // 途中の平均も残す (入りきらなければ捨てる)
     clearAvg();
-    writeStop(phoneMs);
+    writeStop(phoneMs, reason);
     s_recording = false;
     s_rtcMagic  = 0;
     Serial.printf("# log: recording stopped (%lu samples%s)\n", (unsigned long)s_count,
                   phoneMs > 0 ? ", time corrected" : "");
+    if (reason == STOP_REASON_LOW_BATTERY) Serial.println(F("# log: stopped before the battery runs out"));
 }
 
 static void startRecording(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_t intervalMs)
@@ -951,6 +956,11 @@ void devlogRequestStart(int64_t epochMs, int32_t tzMin, bool wifiOff, uint32_t i
 void devlogRequestStop(int64_t epochMs) { s_cmdEpoch = epochMs; s_cmd = CMD_STOP; }
 void devlogRequestClear()               { s_cmd = CMD_CLEAR; }
 
+void devlogStopLowBattery()
+{
+    if (s_part) stopRecording(0, STOP_REASON_LOW_BATTERY);
+}
+
 bool     devlogAvailable() { return s_part != nullptr; }
 bool     devlogRecording() { return s_recording; }
 bool     devlogFull()      { return s_full; }
@@ -994,6 +1004,7 @@ void devlogGetInfo(DevlogInfo &info)
     info.capacity     = devlogCapacity();
     if (s_recording)                 info.endReason = "recording";
     else if (s_stop.stopped != 0)    info.endReason = "recording";   // 記録中に止まった (起動の途中)
+    else if (s_stop.reason == STOP_REASON_LOW_BATTERY) info.endReason = "low_battery";
     else if (s_stop.stopPhoneMs > 0) info.endReason = "stopped";
     else                             info.endReason = s_full ? "full" : "power_loss";
     if (s_header.version >= 3) {
@@ -1377,10 +1388,11 @@ static String csvComment(const CsvState &st)
     c += buf;
 
     // 記録の終わり方。stopped = 「■ 停止」で止めた (時刻を補正した)、full = いっぱいで止まった、
-    // power_loss = 電源が切れた、recording = 記録中
+    // power_loss = 電源が切れた、low_battery = 電池切れの前に止めた、recording = 記録中
     const char *end = "recording";
     if (st.stop.stopped == 0) {
-        end = st.stop.stopPhoneMs > 0 ? "stopped" : (s_full ? "full" : "power_loss");
+        end = st.stop.reason == STOP_REASON_LOW_BATTERY ? "low_battery" :
+              st.stop.stopPhoneMs > 0 ? "stopped" : (s_full ? "full" : "power_loss");
     }
     c += ",end=";
     c += end;

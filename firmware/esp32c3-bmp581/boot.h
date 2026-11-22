@@ -13,6 +13,7 @@ void bootDetect();
 
 bool        bootIsSettingsMode();     // 設定モード (Wi-Fi) で起動したか
 bool        bootWasBrownout();        // 前回、電源電圧の落ち込みでリセットされたか
+bool        bootWasPowerOn();         // 電源を入れて起動したか (電池を入れた、SW1 を入れた)
 const char *bootResetReasonName();    // "POWERON", "SW", "BROWNOUT" など
 
 // 設定モード (true) と通常モード (false) を、再起動で切り替える。

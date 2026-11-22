@@ -132,3 +132,29 @@ void powerIdle(uint32_t nowMs, uint32_t remainingMs)
 
     delay(1);       // CPU を止めて、次のティックを待つ
 }
+
+void powerReleaseHolds()
+{
+    gpio_hold_dis((gpio_num_t)PIN_NEO);
+    gpio_deep_sleep_hold_dis();
+}
+
+void powerDeepSleep()
+{
+    displayWait();
+    // LED のデータ線を Low に保つ (浮いたままだと、雑音で LED が光ることがある)
+    pinMode(PIN_NEO, OUTPUT);
+    digitalWrite(PIN_NEO, LOW);
+    gpio_hold_en((gpio_num_t)PIN_NEO);
+    gpio_deep_sleep_hold_en();
+
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    if (s_hasPowerSt) {
+        esp_deep_sleep_enable_gpio_wakeup(1ULL << PIN_POWER_ST, ESP_GPIO_WAKEUP_GPIO_HIGH);
+    }
+    Serial.printf("# power: deep sleep%s\n", s_hasPowerSt ? " (wakes on USB power, RESET or power switch)"
+                                                             : " (wakes on RESET or power switch)");
+    Serial.flush();
+    delay(20);
+    esp_deep_sleep_start();
+}
