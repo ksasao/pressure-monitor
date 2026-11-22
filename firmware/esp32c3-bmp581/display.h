@@ -17,9 +17,9 @@
 void displayBegin(uint8_t brightness);
 void displaySelfTest();                    // 起動時の自己診断。全 LED を順に R -> G -> B
 void displayError();                       // センサ異常の表示 (呼ぶたびに赤の点滅が反転する)
-void displayFill(const CRGB &c);
+void displayFill(const CRGB &c);           // 全 LED を単色にする (長押しの合図など)
 // LED5 だけを c で点灯し、ほかは消す (電池切れの合図。明るさの設定は掛けない)
-void displayShowLastOnly(const CRGB &c);           // 全 LED を単色にする (長押しの合図など)
+void displayShowLastOnly(const CRGB &c);
 
 // LED へのデータの送信が終わるまで待つ (最大 5ms)。
 // FastLED の show() は非同期で、送信の完了を待たずに戻る。
